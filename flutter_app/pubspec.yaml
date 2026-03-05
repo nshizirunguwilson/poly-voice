@@ -1,0 +1,59 @@
+name: polyvoice
+description: "PolyVoice - Real-time Accessibility Call Translator"
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.2.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ── UI ──
+  cupertino_icons: ^1.0.6
+  google_fonts: ^6.1.0
+  flutter_animate: ^4.3.0
+  lottie: ^3.1.0
+  shimmer: ^3.0.0
+  gap: ^3.0.1
+
+  # ── State Management ──
+  provider: ^6.1.1
+  shared_preferences: ^2.2.2
+
+  # ── Networking ──
+  http: ^1.2.0
+  dio: ^5.4.0
+
+  # ── Twilio Video ──
+  # twilio_programmable_video removed — sunset Dec 2024, conflicts with permission_handler ^11
+  # TODO: Replace with flutter_webrtc or livekit_client for production WebRTC
+
+  # ── Camera & ML ──
+  camera: ^0.11.0
+  google_mlkit_commons: ^0.7.1
+  google_mlkit_pose_detection: ^0.12.0 # Only need pose detection (not the full umbrella)
+
+  # ── Speech ──
+  speech_to_text: ^6.6.0
+  flutter_tts: ^4.0.2
+
+  # ── Permissions ──
+  permission_handler: ^11.1.0
+
+  # ── Utilities ──
+  uuid: ^4.2.1
+  intl: ^0.19.0
+  path_provider: ^2.1.1
+  vibration: ^2.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.1
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/

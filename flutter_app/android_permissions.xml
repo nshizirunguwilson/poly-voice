@@ -1,0 +1,40 @@
+<!-- 
+  ═══════════════════════════════════════════════
+  ADD THESE TO: android/app/src/main/AndroidManifest.xml
+  Inside the <manifest> tag, BEFORE <application>
+  ═══════════════════════════════════════════════
+-->
+
+<!-- Camera (Sign language detection + Twilio Video) -->
+<uses-permission android:name="android.permission.CAMERA" />
+<uses-feature android:name="android.hardware.camera" android:required="true" />
+<uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+<!-- Microphone (Voice calls + Speech-to-Text) -->
+<uses-permission android:name="android.permission.RECORD_AUDIO" />
+<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+<!-- Network (Twilio calls, API requests) -->
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+<!-- Bluetooth (for BT headsets during calls) -->
+<uses-permission android:name="android.permission.BLUETOOTH" />
+<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+<!-- Wake lock (keep screen on during calls) -->
+<uses-permission android:name="android.permission.WAKE_LOCK" />
+
+<!-- Vibration (incoming call notification) -->
+<uses-permission android:name="android.permission.VIBRATE" />
+
+<!--
+  ═══════════════════════════════════════════════
+  ALSO: Set minSdkVersion to 24 in android/app/build.gradle:
+  
+  defaultConfig {
+      minSdkVersion 24   // Required for ML Kit + Twilio
+      targetSdkVersion 34
+  }
+  ═══════════════════════════════════════════════
+-->
