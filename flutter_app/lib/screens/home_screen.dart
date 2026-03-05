@@ -8,8 +8,10 @@ import '../services/auth_service.dart';
 import '../services/call_service.dart';
 import '../services/speech_service.dart';
 import '../services/sign_language_service.dart';
-import 'auth_screen.dart';
+import 'avatar_screen.dart';
 import 'call_screen.dart';
+import 'settings_screen.dart';
+import 'subscription_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -189,15 +191,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(Icons.logout_rounded, color: AppTheme.textSecondary),
-                    onPressed: () async {
-                      await auth.logout();
-                      if (mounted) {
-                        Navigator.pushReplacement(
-                          context,
-                          MaterialPageRoute(builder: (_) => const AuthScreen()),
-                        );
-                      }
+                    icon: const Icon(Icons.settings_rounded, color: AppTheme.textSecondary),
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                      );
                     },
                   ),
                 ],
@@ -212,7 +211,53 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               child: _RoleInfoCard(role: user?.role ?? 'normal'),
             ),
 
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
+
+            // ── Action Tiles ──
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _ActionTile(
+                      icon: Icons.sign_language_rounded,
+                      label: 'Avatar',
+                      color: AppTheme.primary,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const AvatarScreen()),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _ActionTile(
+                      icon: Icons.workspace_premium_rounded,
+                      label: 'Plans',
+                      color: AppTheme.warning,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const SubscriptionScreen()),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _ActionTile(
+                      icon: Icons.settings_rounded,
+                      label: 'Settings',
+                      color: AppTheme.textSecondary,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 20),
 
             // ── Contacts Header ──
             Padding(
@@ -412,6 +457,49 @@ class _UserCard extends StatelessWidget {
             ),
             icon: const Icon(Icons.call_rounded, color: AppTheme.accent, size: 22),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ActionTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _ActionTile({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: color.withOpacity(0.2)),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, color: color, size: 22),
+            const SizedBox(height: 6),
+            Text(
+              label,
+              style: TextStyle(
+                color: color,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
         ),
       ),
     );
