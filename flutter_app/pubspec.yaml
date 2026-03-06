@@ -17,18 +17,20 @@ dependencies:
   lottie: ^3.1.0
   shimmer: ^3.0.0
   gap: ^3.0.1
-
+  googleapis: ^12.0.0
+  googleapis_auth: ^1.4.0
+  web_socket_channel: ^2.4.0
   # ── State Management ──
-  provider: ^6.1.1
+  provider: ^6.1.0
   shared_preferences: ^2.2.2
 
   # ── Networking ──
   http: ^1.2.0
   dio: ^5.4.0
 
-  # ── WebRTC ──
-  flutter_webrtc: ^0.12.2
-  socket_io_client: ^3.0.2
+  # ── Twilio Video ──
+  # twilio_programmable_video removed — sunset Dec 2024, conflicts with permission_handler ^11
+  # TODO: Replace with flutter_webrtc or livekit_client for production WebRTC
 
   # ── Camera & ML ──
   camera: ^0.11.0
@@ -36,23 +38,17 @@ dependencies:
   google_mlkit_pose_detection: ^0.12.0 # Only need pose detection (not the full umbrella)
 
   # ── Speech ──
-  speech_to_text: ^7.0.0
+  speech_to_text: ^6.6.0
   flutter_tts: ^4.0.2
 
   # ── Permissions ──
   permission_handler: ^11.1.0
-
-  # ── Image processing ──
-  image: ^4.2.0
 
   # ── Utilities ──
   uuid: ^4.2.1
   intl: ^0.19.0
   path_provider: ^2.1.1
   vibration: ^2.0.0
-  record: ^6.2.0
-  audioplayers: ^6.6.0
-  web_socket_channel: ^3.0.3
 
 dev_dependencies:
   flutter_test:

@@ -7,8 +7,6 @@
 
 require("dotenv").config();
 const express = require("express");
-const http = require("http");
-const { Server } = require("socket.io");
 const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
@@ -19,10 +17,6 @@ const Database = require("better-sqlite3");
 const twilio = require("twilio");
 
 const app = express();
-const httpServer = http.createServer(app);
-const io = new Server(httpServer, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
-});
 const PORT = process.env.PORT || 3000;
 
 // ─── Middleware ───────────────────────────────────────
@@ -359,19 +353,6 @@ app.post("/api/calls/:callId/end", authenticateToken, (req, res) => {
  * GET /api/calls/pending — check for incoming calls
  */
 app.get("/api/calls/pending", authenticateToken, (req, res) => {
-  console.log(`[Backend] Checking pending calls for user: ${req.user.username} (${req.user.id})`);
-  
-  // Auto-expire calls older than 60 seconds to prevent ghost rings
-  const expired = db.prepare(`
-    UPDATE call_logs 
-    SET status = 'missed', ended_at = CURRENT_TIMESTAMP 
-    WHERE status = 'pending' AND created_at < datetime('now', '-60 seconds')
-  `).run();
-  
-  if (expired.changes > 0) {
-    console.log(`[Backend] Expired ${expired.changes} stale pending calls`);
-  }
-
   const calls = db
     .prepare(`
       SELECT cl.*, u.username as caller_username, u.display_name as caller_name, u.role as caller_role
@@ -385,85 +366,12 @@ app.get("/api/calls/pending", authenticateToken, (req, res) => {
   res.json({ calls });
 });
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// SOCKET.IO — WebRTC Signaling + Text Relay
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-// Track which rooms each socket is in
-const socketRooms = new Map(); // socketId → roomName
-
-io.on("connection", (socket) => {
-  console.log(`[Socket.IO] Connected: ${socket.id}`);
-
-  // ── Join a call room ──
-  socket.on("join-room", ({ roomName, userId, username, role }) => {
-    socket.join(roomName);
-    socketRooms.set(socket.id, roomName);
-    socket.data = { userId, username, role, roomName };
-    console.log(`[Socket.IO] ${username} joined room ${roomName}`);
-
-    // Notify other participants
-    socket.to(roomName).emit("user-joined", { userId, username, role, socketId: socket.id });
-  });
-
-  // ── WebRTC SDP Offer ──
-  socket.on("offer", ({ offer, roomName }) => {
-    socket.to(roomName).emit("offer", { offer, socketId: socket.id });
-  });
-
-  // ── WebRTC SDP Answer ──
-  socket.on("answer", ({ answer, roomName }) => {
-    socket.to(roomName).emit("answer", { answer, socketId: socket.id });
-  });
-
-  // ── ICE Candidate ──
-  socket.on("ice-candidate", ({ candidate, roomName }) => {
-    socket.to(roomName).emit("ice-candidate", { candidate, socketId: socket.id });
-  });
-
-  // ── Text Message Relay (STT transcripts, sign words, quick phrases) ──
-  socket.on("text-message", ({ roomName, text, type, senderName }) => {
-    socket.to(roomName).emit("text-message", { text, type, senderName, socketId: socket.id });
-  });
-
-  socket.on("partial-speech", ({ roomName, text }) => {
-    socket.to(roomName).emit("partial-speech", { text, socketId: socket.id });
-  });
-
-  // ── Call Connected (timer sync) ──
-  socket.on("call-connected", ({ roomName }) => {
-    socket.to(roomName).emit("call-connected", { socketId: socket.id });
-  });
-
-  // ── Leave Room ──
-  socket.on("leave-room", () => {
-    const roomName = socketRooms.get(socket.id);
-    if (roomName) {
-      socket.to(roomName).emit("user-left", { socketId: socket.id });
-      socket.leave(roomName);
-      socketRooms.delete(socket.id);
-      console.log(`[Socket.IO] ${socket.id} left room ${roomName}`);
-    }
-  });
-
-  // ── Disconnect ──
-  socket.on("disconnect", () => {
-    const roomName = socketRooms.get(socket.id);
-    if (roomName) {
-      socket.to(roomName).emit("user-left", { socketId: socket.id });
-      socketRooms.delete(socket.id);
-    }
-    console.log(`[Socket.IO] Disconnected: ${socket.id}`);
-  });
-});
-
 // ─── Start Server ────────────────────────────────────
-httpServer.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`
   ╔══════════════════════════════════════════╗
   ║   🤟 PolyVoice API Server               ║
   ║   Running on http://0.0.0.0:${PORT}        ║
-  ║   Socket.IO enabled ✓                   ║
   ║   Environment: ${process.env.NODE_ENV || "development"}          ║
   ╚══════════════════════════════════════════╝
   `);
