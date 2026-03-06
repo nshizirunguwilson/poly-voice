@@ -3,6 +3,7 @@ backend/node_modules/
 backend/.env
 backend/polyvoice.db
 backend/*.db-journal
+__pycache__
 
 # ── Flutter ──
 flutter_app/.dart_tool/

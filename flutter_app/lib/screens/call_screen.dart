@@ -2,6 +2,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:camera/camera.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
+import '../config/app_config.dart';
 import '../config/theme.dart';
 import '../models/user_model.dart';
 import '../services/auth_service.dart';
@@ -19,14 +22,20 @@ class CallScreen extends StatefulWidget {
 
 class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
   bool _audioEnabled = true;
-  bool _videoEnabled = true;
-  bool _showQuickPhrases = false;
   final List<_ChatMessage> _messages = [];
   final ScrollController _scrollController = ScrollController();
   late AnimationController _pulseController;
 
+  // Camera (deaf users only)
+  CameraController? _cameraController;
+  bool _cameraActive = false;
+
   Timer? _callTimer;
   int _callDuration = 0;
+
+  // WebRTC video renderers
+  final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
+  StreamSubscription? _textMessageSub;
 
   @override
   void initState() {
@@ -37,35 +46,47 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
       duration: const Duration(seconds: 2),
     )..repeat();
 
+    _initRenderers();
     _setupTranslationBridge();
-    _startCallTimer();
+    // Timer starts when call connects — see _listenForConnection()
+    _listenForConnection();
+
+    // Init camera for deaf users (sign language detection)
+    final auth = context.read<AuthService>();
+    if (auth.currentUser?.role == AppConfig.roleDeaf) {
+      _initCamera();
+    }
+  }
+
+  Future<void> _initRenderers() async {
+    await _remoteRenderer.initialize();
   }
 
   /// The core translation bridge:
-  /// - For speaking users: STT → text → display to deaf user
-  /// - For deaf users: sign/phrase → text → TTS → voice to hearing user
+  /// - For speaking users: STT → text → display to deaf user (via socket)
+  /// - For deaf users: sign/phrase → text → TTS → voice to hearing user (via socket)
   void _setupTranslationBridge() {
     final auth = context.read<AuthService>();
+    final callService = context.read<CallService>();
     final speechService = context.read<SpeechService>();
     final signService = context.read<SignLanguageService>();
     final myRole = auth.currentUser?.role ?? 'normal';
 
     // ── VOICE PATH (Blind/Normal → Deaf) ──
-    // When my speech is recognized, show it as a caption
+    // When my speech is recognized, show it locally AND send to remote
     if (myRole != 'deaf') {
       speechService.onFinalResult = (text) {
         _addMessage(text, isMe: true, type: MessageType.speech);
+        callService.sendTextMessage(text, 'speech',
+            senderName: auth.currentUser?.displayName);
       };
       speechService.onPartialResult = (text) {
-        // Update live partial transcript
         setState(() {});
       };
-      // Start listening automatically
       speechService.startListening(continuous: true);
     }
 
     // ── SIGN PATH (Deaf → Blind/Normal) ──
-    // When sign is detected, convert to text and speak it
     if (myRole == 'deaf') {
       signService.onLetterDetected = (letter, confidence) {
         setState(() {});
@@ -74,12 +95,125 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
         setState(() {});
       };
     }
+
+    // ── INCOMING TEXT FROM REMOTE USER (via Socket.IO) ──
+    _textMessageSub = callService.onRemoteTextMessage.listen((msg) {
+      final text = msg['text'] as String? ?? '';
+      final type = msg['type'] as String? ?? 'speech';
+      if (text.isEmpty) return;
+
+      MessageType msgType;
+      switch (type) {
+        case 'sign':
+          msgType = MessageType.sign;
+          break;
+        case 'quickPhrase':
+          msgType = MessageType.quickPhrase;
+          break;
+        default:
+          msgType = MessageType.speech;
+      }
+      _addMessage(text, isMe: false, type: msgType);
+    });
   }
 
   void _startCallTimer() {
+    _callTimer?.cancel();
     _callTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _callDuration++);
     });
+  }
+
+  /// Listen for call state to become connected, then start the timer.
+  void _listenForConnection() {
+    final callService = context.read<CallService>();
+    if (callService.state == CallState.connected) {
+      _startCallTimer();
+      return;
+    }
+    // Listen for changes
+    void listener() {
+      if (callService.state == CallState.connected) {
+        _startCallTimer();
+        callService.removeListener(listener);
+      }
+    }
+
+    callService.addListener(listener);
+  }
+
+  // ── Camera (deaf users only) ──────────────
+
+  Future<void> _initCamera() async {
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) return;
+      // Prefer front camera for signing
+      final front = cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.front,
+        orElse: () => cameras.first,
+      );
+      final controller = CameraController(
+        front,
+        ResolutionPreset.medium,
+        enableAudio: false,
+      );
+      await controller.initialize();
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() {
+        _cameraController = controller;
+        _cameraActive = true;
+      });
+      _startSignDetection();
+    } catch (e) {
+      debugPrint('Camera init error: $e');
+    }
+  }
+
+  void _startSignDetection() {
+    final signService = context.read<SignLanguageService>();
+    final camera = _cameraController;
+    if (camera == null || !camera.value.isInitialized) return;
+    camera.startImageStream((image) {
+      signService.processFrame(image, camera.description);
+    });
+  }
+
+  Future<void> _stopCamera() async {
+    try {
+      await _cameraController?.stopImageStream();
+      await _cameraController?.dispose();
+    } catch (_) {}
+    if (mounted) {
+      setState(() {
+        _cameraController = null;
+        _cameraActive = false;
+      });
+    }
+  }
+
+  /// Speak the currently detected sign text via TTS
+  void _speakDetectedText() {
+    final signService = context.read<SignLanguageService>();
+    final text = signService.detectedWordString.trim();
+    if (text.isEmpty) return;
+    context.read<SpeechService>().speak(text);
+  }
+
+  /// Send sign word as chat message, speak it, and relay to remote
+  void _sendAndSpeakSignWord() {
+    final signService = context.read<SignLanguageService>();
+    final auth = context.read<AuthService>();
+    final callService = context.read<CallService>();
+    final word = signService.consumeWord();
+    if (word.isEmpty) return;
+    _addMessage(word, isMe: true, type: MessageType.sign);
+    context.read<SpeechService>().speak(word);
+    callService.sendTextMessage(word, 'sign',
+        senderName: auth.currentUser?.displayName);
   }
 
   String get _formattedDuration {
@@ -88,7 +222,8 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
     return '$m:$s';
   }
 
-  void _addMessage(String text, {required bool isMe, required MessageType type}) {
+  void _addMessage(String text,
+      {required bool isMe, required MessageType type}) {
     if (text.isEmpty) return;
 
     setState(() {
@@ -118,28 +253,12 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
     }
   }
 
-  /// Send the composed sign word as a message
-  void _sendSignWord() {
-    final signService = context.read<SignLanguageService>();
-    final word = signService.consumeWord();
-    if (word.isNotEmpty) {
-      _addMessage(word, isMe: true, type: MessageType.sign);
-      // The other side will receive this via Twilio data track
-      // For demo: we also TTS it locally so they can hear
-    }
-  }
-
-  /// Send a quick phrase
-  void _sendQuickPhrase(String phrase) {
-    _addMessage(phrase, isMe: true, type: MessageType.quickPhrase);
-    setState(() => _showQuickPhrases = false);
-  }
-
   Future<void> _endCall() async {
     final callService = context.read<CallService>();
     final speechService = context.read<SpeechService>();
 
     speechService.stopListening();
+    await _stopCamera();
     await callService.endCall();
 
     if (mounted) Navigator.pop(context);
@@ -150,14 +269,18 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
     _pulseController.dispose();
     _callTimer?.cancel();
     _scrollController.dispose();
+    _textMessageSub?.cancel();
+    _remoteRenderer.dispose();
     context.read<SpeechService>().stopListening();
+    _cameraController?.stopImageStream().catchError((_) {});
+    _cameraController?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthService>();
-    final callService = context.watch<CallService>();
+    // callService is accessed via context.watch in sub-methods
     final speechService = context.watch<SpeechService>();
     final signService = context.watch<SignLanguageService>();
     final myRole = auth.currentUser?.role ?? 'normal';
@@ -182,7 +305,8 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
                         center: Alignment.topCenter,
                         radius: 1.5,
                         colors: [
-                          AppTheme.roleColor(widget.remoteUser.role).withOpacity(0.08),
+                          AppTheme.roleColor(widget.remoteUser.role)
+                              .withOpacity(0.08),
                           AppTheme.background,
                         ],
                       ),
@@ -199,14 +323,12 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
 
                       // ── Live Caption / Transcript Area ──
                       Expanded(
-                        child: _buildTranscriptArea(speechService, signService, isDeaf),
+                        child: _buildTranscriptArea(
+                            speechService, signService, isDeaf),
                       ),
 
                       // ── Sign Detection Status (deaf users) ──
                       if (isDeaf) _buildSignStatus(signService),
-
-                      // ── Quick Phrases Panel ──
-                      if (_showQuickPhrases && isDeaf) _buildQuickPhrases(),
                     ],
                   ),
                 ],
@@ -234,10 +356,12 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
       child: Row(
         children: [
           Container(
-            width: 42, height: 42,
+            width: 42,
+            height: 42,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(12),
-              color: AppTheme.roleColor(widget.remoteUser.role).withOpacity(0.12),
+              color:
+                  AppTheme.roleColor(widget.remoteUser.role).withOpacity(0.12),
             ),
             child: Center(
               child: Text(
@@ -253,14 +377,16 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
               children: [
                 Text(
                   widget.remoteUser.displayName,
-                  style: GoogleFonts.syne(fontSize: 17, fontWeight: FontWeight.w700),
+                  style: GoogleFonts.syne(
+                      fontSize: 17, fontWeight: FontWeight.w700),
                 ),
                 Row(
                   children: [
                     AnimatedBuilder(
                       animation: _pulseController,
                       builder: (_, __) => Container(
-                        width: 8, height: 8,
+                        width: 8,
+                        height: 8,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
                           color: AppTheme.accent.withOpacity(
@@ -270,9 +396,21 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
                       ),
                     ),
                     const SizedBox(width: 6),
-                    Text(
-                      'Connected • $_formattedDuration',
-                      style: const TextStyle(color: AppTheme.accent, fontSize: 12),
+                    Consumer<CallService>(
+                      builder: (_, cs, __) {
+                        if (cs.state == CallState.connected) {
+                          return Text(
+                            'Connected • $_formattedDuration',
+                            style: const TextStyle(
+                                color: AppTheme.accent, fontSize: 12),
+                          );
+                        }
+                        return const Text(
+                          'Ringing...',
+                          style:
+                              TextStyle(color: AppTheme.warning, fontSize: 12),
+                        );
+                      },
                     ),
                   ],
                 ),
@@ -284,9 +422,11 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
             onPressed: _endCall,
             style: IconButton.styleFrom(
               backgroundColor: AppTheme.danger.withOpacity(0.12),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
             ),
-            icon: const Icon(Icons.call_end_rounded, color: AppTheme.danger, size: 22),
+            icon: const Icon(Icons.call_end_rounded,
+                color: AppTheme.danger, size: 22),
           ),
         ],
       ),
@@ -298,51 +438,95 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Widget _buildRemoteUserArea() {
+    final callService = context.watch<CallService>();
+    final hasRemoteVideo = callService.remoteStream != null;
+
+    // Bind remote stream to renderer when available
+    if (hasRemoteVideo &&
+        _remoteRenderer.srcObject != callService.remoteStream) {
+      _remoteRenderer.srcObject = callService.remoteStream;
+    }
+
     return Container(
       margin: const EdgeInsets.fromLTRB(20, 12, 20, 0),
       height: 180,
+      clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         color: AppTheme.surface,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: AppTheme.border),
       ),
-      child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 72, height: 72,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  colors: [
-                    AppTheme.roleColor(widget.remoteUser.role),
-                    AppTheme.roleColor(widget.remoteUser.role).withOpacity(0.5),
-                  ],
+      child: hasRemoteVideo
+          ? Stack(
+              fit: StackFit.expand,
+              children: [
+                RTCVideoView(
+                  _remoteRenderer,
+                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                  mirror: false,
                 ),
-              ),
-              child: Center(
-                child: Text(
-                  AppTheme.roleEmoji(widget.remoteUser.role),
-                  style: const TextStyle(fontSize: 36),
+                // Name overlay
+                Positioned(
+                  left: 12,
+                  bottom: 10,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      widget.remoteUser.displayName,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  ),
                 ),
+              ],
+            )
+          : Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 72,
+                    height: 72,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(
+                        colors: [
+                          AppTheme.roleColor(widget.remoteUser.role),
+                          AppTheme.roleColor(widget.remoteUser.role)
+                              .withOpacity(0.5),
+                        ],
+                      ),
+                    ),
+                    child: Center(
+                      child: Text(
+                        AppTheme.roleEmoji(widget.remoteUser.role),
+                        style: const TextStyle(fontSize: 36),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    widget.remoteUser.displayName,
+                    style: GoogleFonts.dmSans(
+                        fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                  Text(
+                    'Connecting video...',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppTheme.roleColor(widget.remoteUser.role),
+                    ),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 12),
-            Text(
-              widget.remoteUser.displayName,
-              style: GoogleFonts.dmSans(fontSize: 16, fontWeight: FontWeight.w600),
-            ),
-            Text(
-              AppTheme.roleLabel(widget.remoteUser.role),
-              style: TextStyle(
-                fontSize: 12,
-                color: AppTheme.roleColor(widget.remoteUser.role),
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 
@@ -368,7 +552,8 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             decoration: const BoxDecoration(
-              border: Border(bottom: BorderSide(color: AppTheme.border, width: 0.5)),
+              border: Border(
+                  bottom: BorderSide(color: AppTheme.border, width: 0.5)),
             ),
             child: Row(
               children: [
@@ -380,21 +565,27 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
                 const SizedBox(width: 8),
                 Text(
                   isDeaf ? 'Live Captions' : 'Conversation',
-                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w600, fontSize: 14),
                 ),
                 const Spacer(),
                 if (speech.isListening)
                   Row(
                     children: [
                       Container(
-                        width: 6, height: 6,
+                        width: 6,
+                        height: 6,
                         decoration: const BoxDecoration(
                           shape: BoxShape.circle,
                           color: AppTheme.danger,
                         ),
                       ),
                       const SizedBox(width: 4),
-                      const Text('REC', style: TextStyle(color: AppTheme.danger, fontSize: 10, fontWeight: FontWeight.w700)),
+                      const Text('REC',
+                          style: TextStyle(
+                              color: AppTheme.danger,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700)),
                     ],
                   ),
               ],
@@ -418,7 +609,10 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
                               ? 'Captions will appear here\nwhen the other person speaks'
                               : 'Start speaking...\nYour words will be captioned',
                           textAlign: TextAlign.center,
-                          style: const TextStyle(color: AppTheme.textDim, fontSize: 13, height: 1.5),
+                          style: const TextStyle(
+                              color: AppTheme.textDim,
+                              fontSize: 13,
+                              height: 1.5),
                         ),
                       ],
                     ),
@@ -427,7 +621,8 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
                     controller: _scrollController,
                     padding: const EdgeInsets.all(12),
                     itemCount: _messages.length,
-                    itemBuilder: (_, i) => _MessageBubble(message: _messages[i]),
+                    itemBuilder: (_, i) =>
+                        _MessageBubble(message: _messages[i]),
                   ),
           ),
 
@@ -438,12 +633,14 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               decoration: BoxDecoration(
                 color: AppTheme.primary.withOpacity(0.05),
-                border: const Border(top: BorderSide(color: AppTheme.border, width: 0.5)),
+                border: const Border(
+                    top: BorderSide(color: AppTheme.border, width: 0.5)),
               ),
               child: Row(
                 children: [
                   const SizedBox(
-                    width: 14, height: 14,
+                    width: 14,
+                    height: 14,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
                       color: AppTheme.primary,
@@ -475,123 +672,184 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
   Widget _buildSignStatus(SignLanguageService signService) {
     final result = signService.lastResult;
     final word = signService.detectedWordString;
+    final hasBackend = signService.backendReachable;
 
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 20),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppTheme.border),
-      ),
-      child: Row(
-        children: [
-          // Detected letter
+    return Column(
+      children: [
+        // Camera preview (always visible for deaf users)
+        if (_cameraController != null && _cameraController!.value.isInitialized)
           Container(
-            width: 50, height: 50,
+            margin: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+            height: 140,
+            clipBehavior: Clip.antiAlias,
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              gradient: result != null && result.isStable
-                  ? const LinearGradient(colors: [AppTheme.primary, AppTheme.primaryLight])
-                  : null,
-              color: result == null ? AppTheme.surfaceLight : null,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: AppTheme.primary.withOpacity(0.4)),
             ),
-            child: Center(
-              child: Text(
-                result?.letter ?? '?',
-                style: GoogleFonts.syne(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w800,
-                  color: Colors.white,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 14),
-
-          // Word being built
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Stack(
+              fit: StackFit.expand,
               children: [
-                const Text('Composing:', style: TextStyle(color: AppTheme.textDim, fontSize: 11)),
-                const SizedBox(height: 2),
-                Text(
-                  word.isEmpty ? '...' : word,
-                  style: GoogleFonts.syne(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    color: AppTheme.textPrimary,
+                CameraPreview(_cameraController!),
+                // ROI overlay
+                Center(
+                  child: Container(
+                    width: 90,
+                    height: 90,
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                          color: Colors.white.withOpacity(0.6), width: 1.5),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
                   ),
                 ),
               ],
             ),
           ),
 
-          // Send button
-          IconButton(
-            onPressed: word.isEmpty ? null : _sendSignWord,
-            style: IconButton.styleFrom(
-              backgroundColor: word.isEmpty
-                  ? AppTheme.surfaceLight
-                  : AppTheme.accent.withOpacity(0.15),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-            icon: Icon(
-              Icons.send_rounded,
-              color: word.isEmpty ? AppTheme.textDim : AppTheme.accent,
-              size: 22,
+        // Status bar
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 20),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: AppTheme.surface,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: hasBackend
+                  ? AppTheme.border
+                  : AppTheme.danger.withOpacity(0.4),
             ),
           ),
-        ],
-      ),
-    );
-  }
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // QUICK PHRASES
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Widget _buildQuickPhrases() {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppTheme.primary.withOpacity(0.3)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Quick Phrases',
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.primary),
-          ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: SignLanguageService.quickPhrases.map((phrase) {
-              return GestureDetector(
-                onTap: () => _sendQuickPhrase(phrase),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: AppTheme.surfaceLight,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: AppTheme.border),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Backend status + camera toggle
+              Row(
+                children: [
+                  Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: hasBackend ? AppTheme.accent : AppTheme.danger,
+                    ),
                   ),
-                  child: Text(
-                    phrase,
-                    style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  const SizedBox(width: 6),
+                  Text(
+                    hasBackend ? 'AI Detection Active' : 'Backend Offline',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: hasBackend ? AppTheme.accent : AppTheme.danger,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
-                ),
-              );
-            }).toList(),
+                  const Spacer(),
+                ],
+              ),
+              const SizedBox(height: 10),
+
+              // Letter + word row
+              Row(
+                children: [
+                  // Detected letter circle
+                  Container(
+                    width: 48,
+                    height: 48,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      gradient: result != null && result.isStable
+                          ? const LinearGradient(
+                              colors: [AppTheme.primary, AppTheme.primaryLight])
+                          : null,
+                      color: result == null || !result.isStable
+                          ? AppTheme.surfaceLight
+                          : null,
+                      border: Border.all(
+                        color: result != null && result.isStable
+                            ? Colors.transparent
+                            : AppTheme.border,
+                      ),
+                    ),
+                    child: Center(
+                      child: Text(
+                        result?.letter ?? '?',
+                        style: GoogleFonts.syne(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w800,
+                          color: result != null && result.isStable
+                              ? Colors.white
+                              : AppTheme.textDim,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+
+                  // Word being composed
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Composing:',
+                            style: TextStyle(
+                                color: AppTheme.textDim, fontSize: 10)),
+                        const SizedBox(height: 2),
+                        Text(
+                          word.isEmpty ? '...' : word,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: GoogleFonts.syne(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.textPrimary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Speak button
+                  IconButton(
+                    onPressed: word.isEmpty ? null : _speakDetectedText,
+                    style: IconButton.styleFrom(
+                      backgroundColor: word.isEmpty
+                          ? AppTheme.surfaceLight
+                          : AppTheme.primary.withOpacity(0.15),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.all(8),
+                    ),
+                    icon: Icon(
+                      Icons.volume_up_rounded,
+                      color: word.isEmpty ? AppTheme.textDim : AppTheme.primary,
+                      size: 20,
+                    ),
+                  ),
+
+                  const SizedBox(width: 4),
+
+                  // Send button
+                  IconButton(
+                    onPressed: word.isEmpty ? null : _sendAndSpeakSignWord,
+                    style: IconButton.styleFrom(
+                      backgroundColor: word.isEmpty
+                          ? AppTheme.surfaceLight
+                          : AppTheme.accent.withOpacity(0.15),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.all(8),
+                    ),
+                    icon: Icon(
+                      Icons.send_rounded,
+                      color: word.isEmpty ? AppTheme.textDim : AppTheme.accent,
+                      size: 20,
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -623,27 +881,6 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
               }
             },
           ),
-
-          // Video toggle
-          _ControlButton(
-            icon: _videoEnabled ? Icons.videocam_rounded : Icons.videocam_off_rounded,
-            label: 'Video',
-            active: _videoEnabled,
-            onTap: () {
-              setState(() => _videoEnabled = !_videoEnabled);
-              context.read<CallService>().toggleVideo(_videoEnabled);
-            },
-          ),
-
-          // Quick phrases (deaf only)
-          if (isDeaf)
-            _ControlButton(
-              icon: Icons.chat_bubble_rounded,
-              label: 'Phrases',
-              active: _showQuickPhrases,
-              color: AppTheme.warning,
-              onTap: () => setState(() => _showQuickPhrases = !_showQuickPhrases),
-            ),
 
           // Flip camera
           _ControlButton(
@@ -695,7 +932,8 @@ class _ControlButton extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 52, height: 52,
+            width: 52,
+            height: 52,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: active ? c.withOpacity(0.15) : AppTheme.surfaceLight,
@@ -703,7 +941,8 @@ class _ControlButton extends StatelessWidget {
                 color: active ? c.withOpacity(0.4) : AppTheme.border,
               ),
             ),
-            child: Icon(icon, color: active ? c : AppTheme.textSecondary, size: 24),
+            child: Icon(icon,
+                color: active ? c : AppTheme.textSecondary, size: 24),
           ),
           const SizedBox(height: 4),
           Text(
@@ -766,9 +1005,11 @@ class _MessageBubble extends StatelessWidget {
       child: Container(
         margin: const EdgeInsets.only(bottom: 8),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.7),
+        constraints:
+            BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.7),
         decoration: BoxDecoration(
-          color: isMe ? AppTheme.primary.withOpacity(0.15) : AppTheme.surfaceLight,
+          color:
+              isMe ? AppTheme.primary.withOpacity(0.15) : AppTheme.surfaceLight,
           borderRadius: BorderRadius.only(
             topLeft: const Radius.circular(16),
             topRight: const Radius.circular(16),
@@ -790,7 +1031,10 @@ class _MessageBubble extends StatelessWidget {
                 const SizedBox(width: 4),
                 Text(
                   typeLabel,
-                  style: const TextStyle(fontSize: 10, color: AppTheme.textDim, fontWeight: FontWeight.w600),
+                  style: const TextStyle(
+                      fontSize: 10,
+                      color: AppTheme.textDim,
+                      fontWeight: FontWeight.w600),
                 ),
               ],
             ),

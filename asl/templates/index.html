@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASL Real-Time Translator</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="app">
+        <header>
+            <h1>ASL Translator</h1>
+            <nav class="mode-tabs">
+                <button class="tab active" data-mode="detect">Detect</button>
+                <button class="tab" data-mode="collect">Collect Data</button>
+            </nav>
+            <div id="connection-status" class="status disconnected">Disconnected</div>
+        </header>
+
+        <main>
+            <section class="video-panel">
+                <div class="video-wrapper">
+                    <video id="webcam" autoplay playsinline muted></video>
+                    <canvas id="landmark-canvas"></canvas>
+                    <div id="hand-status" class="hand-status">No hand detected</div>
+                    <div id="current-detection" class="current-detection hidden">
+                        <span class="detected-char" id="detected-char">-</span>
+                        <div class="detection-meta">
+                            <div class="confidence-bar">
+                                <div class="confidence-fill" id="confidence-fill"></div>
+                            </div>
+                            <span class="confidence-text" id="confidence-text">0%</span>
+                            <div class="stability-bar">
+                                <div class="stability-fill" id="stability-fill"></div>
+                            </div>
+                            <span class="stability-text" id="stability-text">Hold</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="side-panel">
+                <!-- ===== Detect Mode ===== -->
+                <div id="detect-panel" class="panel">
+                    <div class="output-area">
+                        <h3>Translated Text</h3>
+                        <div id="text-output" class="text-output">
+                            <span id="text-content"></span><span class="cursor">|</span>
+                        </div>
+                        <div class="output-actions">
+                            <button id="btn-space" title="Add space">Space</button>
+                            <button id="btn-backspace" title="Delete last">&#9003;</button>
+                            <button id="btn-clear" title="Clear all">Clear</button>
+                            <button id="btn-copy" title="Copy text">Copy</button>
+                        </div>
+                    </div>
+
+                    <div class="settings-area">
+                        <h3>Settings</h3>
+                        <div class="setting">
+                            <label for="threshold">Confidence Threshold</label>
+                            <div class="setting-control">
+                                <input type="range" id="threshold" min="40" max="99" value="70">
+                                <span id="threshold-val">70%</span>
+                            </div>
+                        </div>
+                        <div class="setting">
+                            <label for="hold-frames">Stability (frames)</label>
+                            <div class="setting-control">
+                                <input type="range" id="hold-frames" min="3" max="30" value="10">
+                                <span id="hold-val">10</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="no-model-warning" class="warning">
+                        No model trained yet. Switch to the <strong>Collect Data</strong>
+                        tab to gather training samples, then train a model.
+                    </div>
+                </div>
+
+                <!-- ===== Collect Mode ===== -->
+                <div id="collect-panel" class="panel hidden">
+                    <h3>Select Letter</h3>
+                    <div id="letter-grid" class="letter-grid"></div>
+
+                    <div class="collect-info">
+                        <p>Current letter: <strong id="current-letter">A</strong></p>
+                        <p>Samples collected: <strong id="sample-count">0</strong></p>
+                        <p class="hint">
+                            Make the sign with your hand and hold the <em>Collect</em> button.
+                            Aim for <strong>30+</strong> samples per letter with slight hand
+                            variations for robustness.
+                        </p>
+                    </div>
+
+                    <div class="collect-actions">
+                        <button id="btn-collect" class="btn-collect">Hold to Collect</button>
+                        <button id="btn-train" class="btn-train">Train Model</button>
+                        <button id="btn-delete" class="btn-delete">Delete Letter</button>
+                    </div>
+
+                    <div id="train-result" class="train-result hidden"></div>
+
+                    <p class="hint" style="margin-top:1rem">
+                        Note: Letters <strong>J</strong> and <strong>Z</strong> involve
+                        motion and are harder to detect from static hand positions.
+                    </p>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.min.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

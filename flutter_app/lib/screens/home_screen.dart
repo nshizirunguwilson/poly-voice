@@ -23,6 +23,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   List<UserModel> _users = [];
   bool _loadingUsers = true;
+  bool _isShowingIncomingCall = false;
   Timer? _refreshTimer;
 
   @override
@@ -56,6 +57,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _loadUsers() async {
+    if (!mounted) return;
     final auth = context.read<AuthService>();
     final users = await auth.fetchUsers();
     if (mounted) {
@@ -67,7 +69,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   void _handleIncomingCall(CallModel call) {
-    if (!mounted) return;
+    if (!mounted || _isShowingIncomingCall) return;
+    _isShowingIncomingCall = true;
 
     showModalBottomSheet(
       context: context,
@@ -82,7 +85,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         onAccept: () async {
           Navigator.pop(ctx);
           final callService = context.read<CallService>();
-          final result = await callService.acceptCall(call.id);
+          final auth = context.read<AuthService>();
+          final result = await callService.acceptCall(
+            call.id,
+            myUserId: auth.currentUser?.id,
+            myUsername: auth.currentUser?.username,
+            myRole: auth.currentUser?.role,
+          );
           if (result['success'] == true && mounted) {
             Navigator.push(
               context,
@@ -101,14 +110,23 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         },
         onReject: () {
           Navigator.pop(ctx);
+          _isShowingIncomingCall = false;
         },
       ),
-    );
+    ).whenComplete(() {
+      _isShowingIncomingCall = false;
+    });
   }
 
   Future<void> _callUser(UserModel user) async {
     final callService = context.read<CallService>();
-    final result = await callService.initiateCall(user.id);
+    final auth = context.read<AuthService>();
+    final result = await callService.initiateCall(
+      user.id,
+      myUserId: auth.currentUser?.id,
+      myUsername: auth.currentUser?.username,
+      myRole: auth.currentUser?.role,
+    );
 
     if (result['success'] == true && mounted) {
       Navigator.push(
@@ -151,13 +169,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 children: [
                   // Profile avatar
                   Container(
-                    width: 48, height: 48,
+                    width: 48,
+                    height: 48,
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(14),
                       gradient: LinearGradient(
                         colors: [
                           AppTheme.roleColor(user?.role ?? 'normal'),
-                          AppTheme.roleColor(user?.role ?? 'normal').withOpacity(0.6),
+                          AppTheme.roleColor(user?.role ?? 'normal')
+                              .withOpacity(0.6),
                         ],
                       ),
                     ),
@@ -191,11 +211,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(Icons.settings_rounded, color: AppTheme.textSecondary),
+                    icon: const Icon(Icons.settings_rounded,
+                        color: AppTheme.textSecondary),
                     onPressed: () {
                       Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                        MaterialPageRoute(
+                            builder: (_) => const SettingsScreen()),
                       );
                     },
                   ),
@@ -237,7 +259,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       color: AppTheme.warning,
                       onTap: () => Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => const SubscriptionScreen()),
+                        MaterialPageRoute(
+                            builder: (_) => const SubscriptionScreen()),
                       ),
                     ),
                   ),
@@ -249,7 +272,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       color: AppTheme.textSecondary,
                       onTap: () => Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                        MaterialPageRoute(
+                            builder: (_) => const SettingsScreen()),
                       ),
                     ),
                   ),
@@ -273,19 +297,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ),
                   const SizedBox(width: 8),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(
                       color: AppTheme.primary.withOpacity(0.15),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(
                       '${_users.length}',
-                      style: const TextStyle(color: AppTheme.primary, fontSize: 13, fontWeight: FontWeight.w600),
+                      style: const TextStyle(
+                          color: AppTheme.primary,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600),
                     ),
                   ),
                   const Spacer(),
                   IconButton(
-                    icon: const Icon(Icons.refresh_rounded, color: AppTheme.textSecondary, size: 22),
+                    icon: const Icon(Icons.refresh_rounded,
+                        color: AppTheme.textSecondary, size: 22),
                     onPressed: _loadUsers,
                   ),
                 ],
@@ -297,7 +326,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             // ── User List ──
             Expanded(
               child: _loadingUsers
-                  ? const Center(child: CircularProgressIndicator(color: AppTheme.primary))
+                  ? const Center(
+                      child: CircularProgressIndicator(color: AppTheme.primary))
                   : _users.isEmpty
                       ? _emptyState()
                       : RefreshIndicator(
@@ -326,7 +356,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         children: [
           const Text('🫥', style: TextStyle(fontSize: 48)),
           const SizedBox(height: 12),
-          const Text('No contacts yet', style: TextStyle(color: AppTheme.textSecondary, fontSize: 16)),
+          const Text('No contacts yet',
+              style: TextStyle(color: AppTheme.textSecondary, fontSize: 16)),
           const SizedBox(height: 4),
           Text(
             'Register more users to start calling',
@@ -354,15 +385,18 @@ class _RoleInfoCard extends StatelessWidget {
     switch (role) {
       case 'deaf':
         title = 'You will see live captions';
-        subtitle = 'Use camera for sign language or quick phrases to respond. Your signs will be converted to voice for the other person.';
+        subtitle =
+            'Use camera for sign language or quick phrases to respond. Your signs will be converted to voice for the other person.';
         break;
       case 'blind':
         title = 'You will hear voice output';
-        subtitle = 'Speak normally — your voice converts to text for Deaf users. Their sign responses will be read aloud to you.';
+        subtitle =
+            'Speak normally — your voice converts to text for Deaf users. Their sign responses will be read aloud to you.';
         break;
       default:
         title = 'Full accessibility bridge';
-        subtitle = 'Speak normally. Deaf users will see your words as text and can respond with signs converted to voice.';
+        subtitle =
+            'Speak normally. Deaf users will see your words as text and can respond with signs converted to voice.';
     }
 
     return Container(
@@ -375,21 +409,32 @@ class _RoleInfoCard extends StatelessWidget {
       child: Row(
         children: [
           Container(
-            width: 44, height: 44,
+            width: 44,
+            height: 44,
             decoration: BoxDecoration(
               color: color.withOpacity(0.15),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Center(child: Text(AppTheme.roleEmoji(role), style: const TextStyle(fontSize: 22))),
+            child: Center(
+                child: Text(AppTheme.roleEmoji(role),
+                    style: const TextStyle(fontSize: 22))),
           ),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: TextStyle(color: color, fontWeight: FontWeight.w600, fontSize: 14)),
+                Text(title,
+                    style: TextStyle(
+                        color: color,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14)),
                 const SizedBox(height: 4),
-                Text(subtitle, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, height: 1.4)),
+                Text(subtitle,
+                    style: const TextStyle(
+                        color: AppTheme.textSecondary,
+                        fontSize: 12,
+                        height: 1.4)),
               ],
             ),
           ),
@@ -418,13 +463,15 @@ class _UserCard extends StatelessWidget {
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         leading: Container(
-          width: 50, height: 50,
+          width: 50,
+          height: 50,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
             color: color.withOpacity(0.12),
           ),
           child: Center(
-            child: Text(AppTheme.roleEmoji(user.role), style: const TextStyle(fontSize: 24)),
+            child: Text(AppTheme.roleEmoji(user.role),
+                style: const TextStyle(fontSize: 24)),
           ),
         ),
         title: Text(
@@ -434,7 +481,8 @@ class _UserCard extends StatelessWidget {
         subtitle: Row(
           children: [
             Container(
-              width: 8, height: 8,
+              width: 8,
+              height: 8,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: user.isOnline ? AppTheme.accent : AppTheme.textDim,
@@ -443,19 +491,23 @@ class _UserCard extends StatelessWidget {
             const SizedBox(width: 6),
             Text(
               '${AppTheme.roleLabel(user.role)} • ${user.isOnline ? "Online" : "Offline"}',
-              style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+              style:
+                  const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
             ),
           ],
         ),
         trailing: SizedBox(
-          width: 48, height: 48,
+          width: 48,
+          height: 48,
           child: IconButton(
             onPressed: onCall,
             style: IconButton.styleFrom(
               backgroundColor: AppTheme.accent.withOpacity(0.12),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14)),
             ),
-            icon: const Icon(Icons.call_rounded, color: AppTheme.accent, size: 22),
+            icon: const Icon(Icons.call_rounded,
+                color: AppTheme.accent, size: 22),
           ),
         ),
       ),
@@ -525,13 +577,16 @@ class _IncomingCallSheet extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 80, height: 80,
+            width: 80,
+            height: 80,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(24),
-              gradient: const LinearGradient(colors: [AppTheme.primary, AppTheme.primaryLight]),
+              gradient: const LinearGradient(
+                  colors: [AppTheme.primary, AppTheme.primaryLight]),
             ),
             child: Center(
-              child: Text(AppTheme.roleEmoji(call.callerRole), style: const TextStyle(fontSize: 40)),
+              child: Text(AppTheme.roleEmoji(call.callerRole),
+                  style: const TextStyle(fontSize: 40)),
             ),
           ),
           const SizedBox(height: 20),
@@ -546,7 +601,8 @@ class _IncomingCallSheet extends StatelessWidget {
           ),
           Text(
             AppTheme.roleLabel(call.callerRole),
-            style: TextStyle(fontSize: 13, color: AppTheme.roleColor(call.callerRole)),
+            style: TextStyle(
+                fontSize: 13, color: AppTheme.roleColor(call.callerRole)),
           ),
           const SizedBox(height: 32),
           Row(
@@ -556,26 +612,30 @@ class _IncomingCallSheet extends StatelessWidget {
               GestureDetector(
                 onTap: onReject,
                 child: Container(
-                  width: 70, height: 70,
+                  width: 70,
+                  height: 70,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: AppTheme.danger.withOpacity(0.15),
                     border: Border.all(color: AppTheme.danger.withOpacity(0.4)),
                   ),
-                  child: const Icon(Icons.call_end_rounded, color: AppTheme.danger, size: 32),
+                  child: const Icon(Icons.call_end_rounded,
+                      color: AppTheme.danger, size: 32),
                 ),
               ),
               // Accept
               GestureDetector(
                 onTap: onAccept,
                 child: Container(
-                  width: 70, height: 70,
+                  width: 70,
+                  height: 70,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: AppTheme.accent.withOpacity(0.15),
                     border: Border.all(color: AppTheme.accent.withOpacity(0.4)),
                   ),
-                  child: const Icon(Icons.call_rounded, color: AppTheme.accent, size: 32),
+                  child: const Icon(Icons.call_rounded,
+                      color: AppTheme.accent, size: 32),
                 ),
               ),
             ],

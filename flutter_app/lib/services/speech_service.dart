@@ -1,12 +1,13 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
-/// Handles both Speech-to-Text (STT) and Text-to-Speech (TTS).
+/// Speech-to-Text + Text-to-Speech service.
 ///
-/// STT: For Blind/Normal users speaking → text for Deaf user.
-/// TTS: For Deaf user's sign → text → voice for Blind/Normal user.
+/// STT auto-restarts for continuous listening during calls with
+/// exponential backoff and a retry limit to avoid infinite error loops.
 class SpeechService extends ChangeNotifier {
   final SpeechToText _stt = SpeechToText();
   final FlutterTts _tts = FlutterTts();
@@ -15,25 +16,28 @@ class SpeechService extends ChangeNotifier {
   bool _isListening = false;
   String _currentTranscript = '';
   String _lastFinalResult = '';
-  List<String> _transcriptHistory = [];
+  final List<String> _transcriptHistory = [];
 
-  // ── Getters ──
-  bool get isListening => _isListening;
+  // Public getters
   bool get sttAvailable => _sttAvailable;
+  bool get isListening => _isListening;
   String get currentTranscript => _currentTranscript;
   String get lastFinalResult => _lastFinalResult;
-  List<String> get transcriptHistory => _transcriptHistory;
+  List<String> get transcriptHistory => List.unmodifiable(_transcriptHistory);
 
-  // ── Callbacks ──
+  // Callbacks
   Function(String text)? onFinalResult;
   Function(String text)? onPartialResult;
+
+  bool _shouldAutoRestart = false;
+  int _consecutiveErrors = 0;
+  static const int _maxConsecutiveErrors = 3;
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   // INITIALIZATION
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Future<void> init() async {
-    // Initialize STT
     _sttAvailable = await _stt.initialize(
       onStatus: (status) {
         debugPrint('STT Status: $status');
@@ -41,15 +45,35 @@ class SpeechService extends ChangeNotifier {
           _isListening = false;
           notifyListeners();
           // Auto-restart for continuous listening during calls
-          if (_shouldAutoRestart) {
-            Future.delayed(const Duration(milliseconds: 300), startListening);
+          if (_shouldAutoRestart &&
+              _consecutiveErrors < _maxConsecutiveErrors) {
+            final delay = Duration(
+              milliseconds: 500 * (_consecutiveErrors + 1),
+            );
+            Future.delayed(delay, () {
+              if (_shouldAutoRestart) startListening();
+            });
           }
         }
       },
       onError: (error) {
         debugPrint('STT Error: $error');
         _isListening = false;
+        _consecutiveErrors++;
         notifyListeners();
+
+        // Only retry if below the error limit and set to auto-restart
+        if (_shouldAutoRestart && _consecutiveErrors < _maxConsecutiveErrors) {
+          final delay = Duration(seconds: _consecutiveErrors * 2);
+          debugPrint(
+              'STT will retry in ${delay.inSeconds}s (attempt $_consecutiveErrors/$_maxConsecutiveErrors)');
+          Future.delayed(delay, () {
+            if (_shouldAutoRestart) startListening();
+          });
+        } else if (_consecutiveErrors >= _maxConsecutiveErrors) {
+          debugPrint('STT max retries reached, stopping auto-restart');
+          _shouldAutoRestart = false;
+        }
       },
     );
 
@@ -62,7 +86,6 @@ class SpeechService extends ChangeNotifier {
     // Use system's best voice
     final voices = await _tts.getVoices;
     if (voices is List && voices.isNotEmpty) {
-      // Prefer a natural-sounding English voice
       final englishVoices = voices.where(
         (v) => v['locale']?.toString().startsWith('en') ?? false,
       );
@@ -76,8 +99,6 @@ class SpeechService extends ChangeNotifier {
 
     debugPrint('Speech service initialized. STT available: $_sttAvailable');
   }
-
-  bool _shouldAutoRestart = false;
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   // SPEECH TO TEXT
@@ -100,6 +121,9 @@ class SpeechService extends ChangeNotifier {
   }
 
   void _onSpeechResult(SpeechRecognitionResult result) {
+    // Reset error counter on successful result
+    _consecutiveErrors = 0;
+
     _currentTranscript = result.recognizedWords;
 
     if (result.finalResult) {
@@ -118,6 +142,7 @@ class SpeechService extends ChangeNotifier {
   Future<void> stopListening() async {
     _shouldAutoRestart = false;
     _isListening = false;
+    _consecutiveErrors = 0;
     await _stt.stop();
     notifyListeners();
   }

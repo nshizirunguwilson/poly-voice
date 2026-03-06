@@ -11,7 +11,8 @@ class AppConfig {
   // Android emulator → 10.0.2.2
   // iOS simulator   → localhost
   // Physical device  → your local IP (e.g., 192.168.1.x)
-  static const String baseUrl = 'http://localhost:3000';
+  static const String baseUrl = 'http://172.17.10.254:3000';
+  static const String socketUrl = 'http://172.17.10.254:3000';
 
   // ── API Endpoints ──
   static const String apiBase = '$baseUrl/api';
@@ -29,6 +30,12 @@ class AppConfig {
 
   // ── Call Polling Interval ──
   static const Duration callPollInterval = Duration(seconds: 3);
+
+  // ── ASL Python Backend ──
+  // iOS simulator   → localhost
+  // Android emulator → 10.0.2.2
+  // Physical device  → your local IP (e.g., 192.168.1.x)
+  static const String aslBackendUrl = 'http://172.17.10.254:8000';
 
   // ── ASL Detection ──
   static const double signConfidenceThreshold = 0.70;

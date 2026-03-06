@@ -7,6 +7,8 @@
 
 require("dotenv").config();
 const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
 const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
@@ -17,6 +19,10 @@ const Database = require("better-sqlite3");
 const twilio = require("twilio");
 
 const app = express();
+const httpServer = http.createServer(app);
+const io = new Server(httpServer, {
+  cors: { origin: "*", methods: ["GET", "POST"] },
+});
 const PORT = process.env.PORT || 3000;
 
 // ─── Middleware ───────────────────────────────────────
@@ -366,12 +372,81 @@ app.get("/api/calls/pending", authenticateToken, (req, res) => {
   res.json({ calls });
 });
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SOCKET.IO — WebRTC Signaling + Text Relay
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Track which rooms each socket is in
+const socketRooms = new Map(); // socketId → roomName
+
+io.on("connection", (socket) => {
+  console.log(`[Socket.IO] Connected: ${socket.id}`);
+
+  // ── Join a call room ──
+  socket.on("join-room", ({ roomName, userId, username, role }) => {
+    socket.join(roomName);
+    socketRooms.set(socket.id, roomName);
+    socket.data = { userId, username, role, roomName };
+    console.log(`[Socket.IO] ${username} joined room ${roomName}`);
+
+    // Notify other participants
+    socket.to(roomName).emit("user-joined", { userId, username, role, socketId: socket.id });
+  });
+
+  // ── WebRTC SDP Offer ──
+  socket.on("offer", ({ offer, roomName }) => {
+    socket.to(roomName).emit("offer", { offer, socketId: socket.id });
+  });
+
+  // ── WebRTC SDP Answer ──
+  socket.on("answer", ({ answer, roomName }) => {
+    socket.to(roomName).emit("answer", { answer, socketId: socket.id });
+  });
+
+  // ── ICE Candidate ──
+  socket.on("ice-candidate", ({ candidate, roomName }) => {
+    socket.to(roomName).emit("ice-candidate", { candidate, socketId: socket.id });
+  });
+
+  // ── Text Message Relay (STT transcripts, sign words, quick phrases) ──
+  socket.on("text-message", ({ roomName, text, type, senderName }) => {
+    socket.to(roomName).emit("text-message", { text, type, senderName, socketId: socket.id });
+  });
+
+  // ── Call Connected (timer sync) ──
+  socket.on("call-connected", ({ roomName }) => {
+    socket.to(roomName).emit("call-connected", { socketId: socket.id });
+  });
+
+  // ── Leave Room ──
+  socket.on("leave-room", () => {
+    const roomName = socketRooms.get(socket.id);
+    if (roomName) {
+      socket.to(roomName).emit("user-left", { socketId: socket.id });
+      socket.leave(roomName);
+      socketRooms.delete(socket.id);
+      console.log(`[Socket.IO] ${socket.id} left room ${roomName}`);
+    }
+  });
+
+  // ── Disconnect ──
+  socket.on("disconnect", () => {
+    const roomName = socketRooms.get(socket.id);
+    if (roomName) {
+      socket.to(roomName).emit("user-left", { socketId: socket.id });
+      socketRooms.delete(socket.id);
+    }
+    console.log(`[Socket.IO] Disconnected: ${socket.id}`);
+  });
+});
+
 // ─── Start Server ────────────────────────────────────
-app.listen(PORT, "0.0.0.0", () => {
+httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`
   ╔══════════════════════════════════════════╗
   ║   🤟 PolyVoice API Server               ║
   ║   Running on http://0.0.0.0:${PORT}        ║
+  ║   Socket.IO enabled ✓                   ║
   ║   Environment: ${process.env.NODE_ENV || "development"}          ║
   ╚══════════════════════════════════════════╝
   `);
