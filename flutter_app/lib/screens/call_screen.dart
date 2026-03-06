@@ -39,6 +39,8 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
   final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
 
   StreamSubscription? _textMessageSub;
+  StreamSubscription? _partialSpeechSub;
+  String _remotePartialSpeech = '';
 
   @override
   void initState() {
@@ -84,6 +86,7 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
             senderName: auth.currentUser?.displayName);
       };
       speechService.onPartialResult = (text) {
+        callService.sendPartialSpeech(text);
         setState(() {});
       };
       speechService.startListening(continuous: true);
@@ -123,6 +126,17 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
           msgType = MessageType.speech;
       }
       _addMessage(text, isMe: false, type: msgType);
+
+      // Clear the partial transcript once the final message arrives
+      if (mounted) {
+        setState(() => _remotePartialSpeech = '');
+      }
+    });
+
+    _partialSpeechSub = callService.onRemotePartialSpeech.listen((text) {
+      if (mounted) {
+        setState(() => _remotePartialSpeech = text);
+      }
     });
   }
 
@@ -279,6 +293,7 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
     _callTimer?.cancel();
     _scrollController.dispose();
     _textMessageSub?.cancel();
+    _partialSpeechSub?.cancel();
     _remoteRenderer.dispose();
     context.read<SpeechService>().stopListening();
     _cameraController?.stopImageStream().catchError((_) {});
@@ -716,7 +731,8 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
           ),
 
           // Live partial transcript
-          if (speech.currentTranscript.isNotEmpty && !isDeaf)
+          if ((!isDeaf && speech.currentTranscript.isNotEmpty) ||
+              (isDeaf && _remotePartialSpeech.isNotEmpty))
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -738,7 +754,7 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      speech.currentTranscript,
+                      isDeaf ? _remotePartialSpeech : speech.currentTranscript,
                       style: TextStyle(
                         color: AppTheme.textPrimary.withOpacity(0.6),
                         fontSize: 14,

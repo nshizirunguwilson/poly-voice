@@ -426,6 +426,10 @@ io.on("connection", (socket) => {
     socket.to(roomName).emit("text-message", { text, type, senderName, socketId: socket.id });
   });
 
+  socket.on("partial-speech", ({ roomName, text }) => {
+    socket.to(roomName).emit("partial-speech", { text, socketId: socket.id });
+  });
+
   // ── Call Connected (timer sync) ──
   socket.on("call-connected", ({ roomName }) => {
     socket.to(roomName).emit("call-connected", { socketId: socket.id });

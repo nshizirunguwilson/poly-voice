@@ -1,16 +1,19 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
-import 'package:speech_to_text/speech_to_text.dart';
-import 'package:speech_to_text/speech_recognition_result.dart';
-import 'package:flutter_tts/flutter_tts.dart';
+import 'package:http/http.dart' as http;
+import 'package:record/record.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:audioplayers/audioplayers.dart';
+import '../config/app_config.dart';
 
-/// Speech-to-Text + Text-to-Speech service.
-///
-/// STT auto-restarts for continuous listening during calls with
-/// exponential backoff and a retry limit to avoid infinite error loops.
+/// Speech-to-Text + Text-to-Speech service using Deepgram.
 class SpeechService extends ChangeNotifier {
-  final SpeechToText _stt = SpeechToText();
-  final FlutterTts _tts = FlutterTts();
+  final AudioRecorder _audioRecorder = AudioRecorder();
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  WebSocketChannel? _channel;
+  StreamSubscription? _audioStreamSub;
 
   bool _sttAvailable = false;
   bool _isListening = false;
@@ -29,135 +32,126 @@ class SpeechService extends ChangeNotifier {
   Function(String text)? onFinalResult;
   Function(String text)? onPartialResult;
 
-  bool _shouldAutoRestart = false;
-  int _consecutiveErrors = 0;
-  static const int _maxConsecutiveErrors = 3;
-
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   // INITIALIZATION
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Future<void> init() async {
-    _sttAvailable = await _stt.initialize(
-      onStatus: (status) {
-        debugPrint('STT Status: $status');
-        if (status == 'done' || status == 'notListening') {
-          _isListening = false;
-          notifyListeners();
-          // Auto-restart for continuous listening during calls
-          if (_shouldAutoRestart &&
-              _consecutiveErrors < _maxConsecutiveErrors) {
-            final delay = Duration(
-              milliseconds: 500 * (_consecutiveErrors + 1),
-            );
-            Future.delayed(delay, () {
-              if (_shouldAutoRestart) startListening();
-            });
-          }
-        }
-      },
-      onError: (error) {
-        debugPrint('STT Error: $error');
-        _isListening = false;
-        _consecutiveErrors++;
-        notifyListeners();
-
-        // Only retry if below the error limit and set to auto-restart
-        if (_shouldAutoRestart && _consecutiveErrors < _maxConsecutiveErrors) {
-          final delay = Duration(seconds: _consecutiveErrors * 2);
-          debugPrint(
-              'STT will retry in ${delay.inSeconds}s (attempt $_consecutiveErrors/$_maxConsecutiveErrors)');
-          Future.delayed(delay, () {
-            if (_shouldAutoRestart) startListening();
-          });
-        } else if (_consecutiveErrors >= _maxConsecutiveErrors) {
-          debugPrint('STT max retries reached, stopping auto-restart');
-          _shouldAutoRestart = false;
-        }
-      },
-    );
-
-    // Initialize TTS
-    await _tts.setLanguage('en-US');
-    await _tts.setSpeechRate(0.5);
-    await _tts.setVolume(1.0);
-    await _tts.setPitch(1.0);
-
-    // Use system's best voice
-    final voices = await _tts.getVoices;
-    if (voices is List && voices.isNotEmpty) {
-      final englishVoices = voices.where(
-        (v) => v['locale']?.toString().startsWith('en') ?? false,
-      );
-      if (englishVoices.isNotEmpty) {
-        await _tts.setVoice({
-          'name': englishVoices.first['name'],
-          'locale': englishVoices.first['locale'],
-        });
-      }
-    }
-
+    _sttAvailable = await _audioRecorder.hasPermission();
     debugPrint('Speech service initialized. STT available: $_sttAvailable');
+    notifyListeners();
   }
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // SPEECH TO TEXT
+  // SPEECH TO TEXT (Deepgram Streaming)
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Future<void> startListening({bool continuous = true}) async {
     if (!_sttAvailable || _isListening) return;
 
-    _shouldAutoRestart = continuous;
     _isListening = true;
     notifyListeners();
 
-    await _stt.listen(
-      onResult: _onSpeechResult,
-      listenFor: const Duration(seconds: 30),
-      pauseFor: const Duration(seconds: 3),
-      partialResults: true,
-      listenMode: ListenMode.dictation,
-    );
-  }
+    try {
+      final uri = Uri.parse(
+          'wss://api.deepgram.com/v1/listen?encoding=linear16&sample_rate=16000&channels=1&interim_results=true');
 
-  void _onSpeechResult(SpeechRecognitionResult result) {
-    // Reset error counter on successful result
-    _consecutiveErrors = 0;
+      _channel = WebSocketChannel.connect(
+        uri,
+        protocols: ['token', AppConfig.deepgramApiKey],
+      );
 
-    _currentTranscript = result.recognizedWords;
+      _channel!.stream.listen((message) {
+        final data = jsonDecode(message);
+        if (data['channel'] != null &&
+            data['channel']['alternatives'] != null) {
+          final alt = data['channel']['alternatives'][0];
+          final text = alt['transcript'] as String;
 
-    if (result.finalResult) {
-      _lastFinalResult = result.recognizedWords;
-      if (_lastFinalResult.isNotEmpty) {
-        _transcriptHistory.add(_lastFinalResult);
-        onFinalResult?.call(_lastFinalResult);
-      }
-    } else {
-      onPartialResult?.call(_currentTranscript);
+          if (text.isNotEmpty) {
+            _currentTranscript = text;
+
+            if (data['is_final'] == true) {
+              _lastFinalResult = text;
+              _transcriptHistory.add(text);
+              onFinalResult?.call(text);
+              _currentTranscript = ''; // reset for next sentence
+            } else {
+              onPartialResult?.call(text);
+            }
+            notifyListeners();
+          }
+        }
+      }, onError: (error) {
+        debugPrint('Deepgram STT Socket Error: $error');
+        stopListening();
+      }, onDone: () {
+        debugPrint('Deepgram STT Socket Closed');
+        stopListening();
+      });
+
+      final stream = await _audioRecorder.startStream(const RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        sampleRate: 16000,
+        numChannels: 1,
+      ));
+
+      _audioStreamSub = stream.listen((Uint8List data) {
+        if (_channel != null) {
+          _channel!.sink.add(data);
+        }
+      });
+    } catch (e) {
+      debugPrint('Error starting STT: $e');
+      stopListening();
     }
-
-    notifyListeners();
   }
 
   Future<void> stopListening() async {
-    _shouldAutoRestart = false;
     _isListening = false;
-    _consecutiveErrors = 0;
-    await _stt.stop();
+    await _audioStreamSub?.cancel();
+    _audioStreamSub = null;
+
+    await _audioRecorder.stop();
+
+    // Close websocket gently
+    _channel?.sink.close();
+    _channel = null;
+
     notifyListeners();
   }
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // TEXT TO SPEECH
+  // TEXT TO SPEECH (Deepgram REST)
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Future<void> speak(String text) async {
     if (text.isEmpty) return;
-    await _tts.speak(text);
+
+    try {
+      final url =
+          Uri.parse('https://api.deepgram.com/v1/speak?model=aura-asteria-en');
+      final response = await http.post(
+        url,
+        headers: {
+          'Authorization': 'Token ${AppConfig.deepgramApiKey}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'text': text}),
+      );
+
+      if (response.statusCode == 200) {
+        await _audioPlayer.play(BytesSource(response.bodyBytes));
+      } else {
+        debugPrint('TTS Error: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      debugPrint('TTS Network Error: $e');
+    }
   }
 
   Future<void> stopSpeaking() async {
-    await _tts.stop();
+    await _audioPlayer.stop();
   }
 
   // ── Utility ──
@@ -170,9 +164,9 @@ class SpeechService extends ChangeNotifier {
 
   @override
   void dispose() {
-    _shouldAutoRestart = false;
-    _stt.stop();
-    _tts.stop();
+    stopListening();
+    _audioPlayer.dispose();
+    _audioRecorder.dispose();
     super.dispose();
   }
 }

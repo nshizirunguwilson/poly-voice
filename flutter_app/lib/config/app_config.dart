@@ -42,6 +42,10 @@ class AppConfig {
   static const int signStabilityFrames = 8;
   static const Duration signCooldown = Duration(milliseconds: 1200);
 
+  // ── Deepgram API Key ──
+  static const String deepgramApiKey =
+      'ae84d96beeb1763742ae7ce2e29637fc2b711a37';
+
   // ── User Roles ──
   static const String roleDeaf = 'deaf';
   static const String roleBlind = 'blind';

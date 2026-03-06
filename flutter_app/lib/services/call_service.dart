@@ -48,6 +48,9 @@ class CallService extends ChangeNotifier {
   Stream<Map<String, dynamic>> get onRemoteTextMessage =>
       _textMessageController.stream;
 
+  final _partialSpeechController = StreamController<String>.broadcast();
+  Stream<String> get onRemotePartialSpeech => _partialSpeechController.stream;
+
   // ── Auth headers ──
   Map<String, String> get _headers => {
         'Content-Type': 'application/json',
@@ -117,6 +120,11 @@ class CallService extends ChangeNotifier {
 
     _socket!.on('text-message', (data) {
       _textMessageController.add(Map<String, dynamic>.from(data));
+    });
+
+    _socket!.on('partial-speech', (data) {
+      final text = data['text'] as String? ?? '';
+      _partialSpeechController.add(text);
     });
 
     _socket!.on('user-left', (_) {
@@ -406,6 +414,14 @@ class CallService extends ChangeNotifier {
       'text': text,
       'type': type,
       'senderName': senderName ?? '',
+    });
+  }
+
+  void sendPartialSpeech(String text) {
+    if (_currentRoomName == null || _socket == null || !_socketReady) return;
+    _socket!.emit('partial-speech', {
+      'roomName': _currentRoomName,
+      'text': text,
     });
   }
 
