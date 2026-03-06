@@ -359,6 +359,19 @@ app.post("/api/calls/:callId/end", authenticateToken, (req, res) => {
  * GET /api/calls/pending — check for incoming calls
  */
 app.get("/api/calls/pending", authenticateToken, (req, res) => {
+  console.log(`[Backend] Checking pending calls for user: ${req.user.username} (${req.user.id})`);
+  
+  // Auto-expire calls older than 60 seconds to prevent ghost rings
+  const expired = db.prepare(`
+    UPDATE call_logs 
+    SET status = 'missed', ended_at = CURRENT_TIMESTAMP 
+    WHERE status = 'pending' AND created_at < datetime('now', '-60 seconds')
+  `).run();
+  
+  if (expired.changes > 0) {
+    console.log(`[Backend] Expired ${expired.changes} stale pending calls`);
+  }
+
   const calls = db
     .prepare(`
       SELECT cl.*, u.username as caller_username, u.display_name as caller_name, u.role as caller_role

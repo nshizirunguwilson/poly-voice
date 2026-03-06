@@ -97,6 +97,12 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
       signService.onWordUpdated = (word) {
         setState(() {});
       };
+      signService.onSentenceCompleted = (sentence) {
+        // Only run if mounted to avoid errors if call ended
+        if (mounted) {
+          _sendAndSpeakSignWord();
+        }
+      };
     }
 
     // ── INCOMING TEXT FROM REMOTE USER (via Socket.IO) ──
@@ -293,7 +299,11 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
 
     // Ensure audio works by attaching remote stream
     if (_remoteRenderer.srcObject != callService.remoteStream) {
-      _remoteRenderer.srcObject = callService.remoteStream;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _remoteRenderer.srcObject = callService.remoteStream;
+        }
+      });
     }
 
     return Scaffold(
@@ -348,59 +358,63 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
     return Column(
       children: [
         // Top: Large camera preview for signing
-        Container(
-          margin: const EdgeInsets.fromLTRB(20, 12, 20, 8),
-          height: 240, // Taller camera area
-          clipBehavior: Clip.antiAlias,
-          decoration: BoxDecoration(
-            color: AppTheme.surfaceLight,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: AppTheme.primary.withOpacity(0.4)),
-          ),
-          child: _cameraController != null &&
-                  _cameraController!.value.isInitialized
-              ? Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    // Wrap with FittedBox to crop without stretching
-                    FittedBox(
-                      fit: BoxFit.cover,
-                      child: SizedBox(
-                        // swap width & height because portrait cameras are rotated
-                        width:
-                            _cameraController!.value.previewSize?.height ?? 1,
-                        height:
-                            _cameraController!.value.previewSize?.width ?? 1,
-                        child: CameraPreview(_cameraController!),
-                      ),
-                    ),
-                    // ROI overlay
-                    Center(
-                      child: Container(
-                        width: 120,
-                        height: 120,
-                        decoration: BoxDecoration(
-                          border: Border.all(
-                              color: Colors.white.withOpacity(0.6), width: 1.5),
-                          borderRadius: BorderRadius.circular(12),
+        Expanded(
+          flex: 3,
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              color: AppTheme.surfaceLight,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: AppTheme.primary.withOpacity(0.4)),
+            ),
+            child: _cameraController != null &&
+                    _cameraController!.value.isInitialized
+                ? Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      // Wrap with FittedBox to crop without stretching
+                      FittedBox(
+                        fit: BoxFit.cover,
+                        child: SizedBox(
+                          // swap width & height because portrait cameras are rotated
+                          width:
+                              _cameraController!.value.previewSize?.height ?? 1,
+                          height:
+                              _cameraController!.value.previewSize?.width ?? 1,
+                          child: CameraPreview(_cameraController!),
                         ),
                       ),
-                    ),
-                  ],
-                )
-              : const Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      CircularProgressIndicator(color: AppTheme.primary),
-                      SizedBox(height: 12),
-                      Text(
-                        'Starting camera...',
-                        style: TextStyle(color: AppTheme.textDim, fontSize: 13),
+                      // ROI overlay
+                      Center(
+                        child: Container(
+                          width: 120,
+                          height: 120,
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                                color: Colors.white.withOpacity(0.6),
+                                width: 1.5),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
                       ),
                     ],
+                  )
+                : const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircularProgressIndicator(color: AppTheme.primary),
+                        SizedBox(height: 12),
+                        Text(
+                          'Starting camera...',
+                          style:
+                              TextStyle(color: AppTheme.textDim, fontSize: 13),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
+          ),
         ),
 
         // Middle: Small remote avatar
@@ -408,6 +422,7 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
 
         // Bottom: Transcripts / Captions
         Expanded(
+          flex: 2,
           child: _buildTranscriptArea(speech, signService, true),
         ),
 

@@ -60,14 +60,11 @@ Uint8List? _convertIsolate(CameraImage cameraImage) {
 
     if (image == null) return null;
 
-    final size = image.width < image.height ? image.width : image.height;
-    final x = (image.width - size) ~/ 2;
-    final y = (image.height - size) ~/ 2;
-    final cropped = img.copyCrop(image, x: x, y: y, width: size, height: size);
-    final resized = img.copyResize(cropped,
-        width: 256, height: 256, interpolation: img.Interpolation.linear);
+    // Resize to lower resolution to save bandwidth while maintaining Aspect Ratio
+    final resized = img.copyResize(image,
+        height: 320, interpolation: img.Interpolation.linear);
 
-    return Uint8List.fromList(img.encodeJpg(resized, quality: 85));
+    return Uint8List.fromList(img.encodeJpg(resized, quality: 80));
   } catch (e) {
     return null;
   }
@@ -134,6 +131,7 @@ class SignLanguageService extends ChangeNotifier {
   // Callbacks
   Function(String letter, double confidence)? onLetterDetected;
   Function(String word)? onWordUpdated;
+  Function(String sentence)? onSentenceCompleted;
 
   // Getters
   SignDetectionResult? get lastResult => _lastResult;
@@ -141,6 +139,9 @@ class SignLanguageService extends ChangeNotifier {
   String get detectedWordString => _detectedWord.join();
   bool get isInitialized => _isInitialized;
   bool get backendReachable => _backendReachable;
+
+  // Auto-send logic
+  Timer? _autoSendTimer;
 
   // Quick phrases for demo
   static const List<String> quickPhrases = [
@@ -331,6 +332,8 @@ class SignLanguageService extends ChangeNotifier {
           onLetterDetected?.call(letter, result.confidence);
           onWordUpdated?.call(detectedWordString);
         }
+
+        _resetAutoSendTimer();
         _stabilityBuffer.clear();
       }
     }
@@ -342,22 +345,35 @@ class SignLanguageService extends ChangeNotifier {
   // MANUAL WORD EDITING
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+  void _resetAutoSendTimer() {
+    _autoSendTimer?.cancel();
+    _autoSendTimer = Timer(const Duration(seconds: 3), () {
+      final sentence = detectedWordString.trim();
+      if (sentence.isNotEmpty) {
+        onSentenceCompleted?.call(sentence);
+      }
+    });
+  }
+
   void addQuickPhrase(String phrase) {
     _detectedWord.addAll(phrase.split(''));
     onLetterDetected?.call(phrase, 1.0);
     onWordUpdated?.call(phrase);
+    _resetAutoSendTimer();
     notifyListeners();
   }
 
   void addLetter(String letter) {
     _detectedWord.add(letter);
     onWordUpdated?.call(detectedWordString);
+    _resetAutoSendTimer();
     notifyListeners();
   }
 
   void addSpace() {
     _detectedWord.add(' ');
     onWordUpdated?.call(detectedWordString);
+    _resetAutoSendTimer();
     notifyListeners();
   }
 
@@ -365,6 +381,7 @@ class SignLanguageService extends ChangeNotifier {
     if (_detectedWord.isNotEmpty) {
       _detectedWord.removeLast();
       onWordUpdated?.call(detectedWordString);
+      _resetAutoSendTimer();
       notifyListeners();
     }
   }
@@ -373,6 +390,7 @@ class SignLanguageService extends ChangeNotifier {
     _detectedWord.clear();
     _stabilityBuffer.clear();
     _lastResult = null;
+    _autoSendTimer?.cancel();
     onWordUpdated?.call('');
     notifyListeners();
   }
@@ -385,6 +403,7 @@ class SignLanguageService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _autoSendTimer?.cancel();
     _socket?.disconnect();
     _socket?.dispose();
     super.dispose();
