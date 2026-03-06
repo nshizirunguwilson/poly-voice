@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+
 import '../config/app_config.dart';
 import '../config/theme.dart';
 import '../models/user_model.dart';
@@ -33,8 +34,10 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
   Timer? _callTimer;
   int _callDuration = 0;
 
-  // WebRTC video renderers
+  // We need to keep a renderer alive purely for audio playback of the remote stream,
+  // even if it is visually hidden from the UI.
   final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
+
   StreamSubscription? _textMessageSub;
 
   @override
@@ -281,10 +284,17 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     final auth = context.watch<AuthService>();
     // callService is accessed via context.watch in sub-methods
+    // callService is accessed via context.watch in sub-methods
+    final callService = context.watch<CallService>();
     final speechService = context.watch<SpeechService>();
     final signService = context.watch<SignLanguageService>();
     final myRole = auth.currentUser?.role ?? 'normal';
     final isDeaf = myRole == 'deaf';
+
+    // Ensure audio works by attaching remote stream
+    if (_remoteRenderer.srcObject != callService.remoteStream) {
+      _remoteRenderer.srcObject = callService.remoteStream;
+    }
 
     return Scaffold(
       backgroundColor: AppTheme.background,
@@ -314,23 +324,9 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
                   ),
 
                   // Main content area
-                  Column(
-                    children: [
-                      // ── Remote User Display ──
-                      _buildRemoteUserArea(),
-
-                      const SizedBox(height: 8),
-
-                      // ── Live Caption / Transcript Area ──
-                      Expanded(
-                        child: _buildTranscriptArea(
-                            speechService, signService, isDeaf),
-                      ),
-
-                      // ── Sign Detection Status (deaf users) ──
-                      if (isDeaf) _buildSignStatus(signService),
-                    ],
-                  ),
+                  isDeaf
+                      ? _buildDeafLayout(speechService, signService)
+                      : _buildHearingLayout(speechService, signService),
                 ],
               ),
             ),
@@ -340,6 +336,105 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
           ],
         ),
       ),
+    );
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // DEAF LAYOUT
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Widget _buildDeafLayout(
+      SpeechService speech, SignLanguageService signService) {
+    return Column(
+      children: [
+        // Top: Large camera preview for signing
+        Container(
+          margin: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+          height: 240, // Taller camera area
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            color: AppTheme.surfaceLight,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: AppTheme.primary.withOpacity(0.4)),
+          ),
+          child: _cameraController != null &&
+                  _cameraController!.value.isInitialized
+              ? Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    // Wrap with FittedBox to crop without stretching
+                    FittedBox(
+                      fit: BoxFit.cover,
+                      child: SizedBox(
+                        // swap width & height because portrait cameras are rotated
+                        width:
+                            _cameraController!.value.previewSize?.height ?? 1,
+                        height:
+                            _cameraController!.value.previewSize?.width ?? 1,
+                        child: CameraPreview(_cameraController!),
+                      ),
+                    ),
+                    // ROI overlay
+                    Center(
+                      child: Container(
+                        width: 120,
+                        height: 120,
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                              color: Colors.white.withOpacity(0.6), width: 1.5),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ],
+                )
+              : const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(color: AppTheme.primary),
+                      SizedBox(height: 12),
+                      Text(
+                        'Starting camera...',
+                        style: TextStyle(color: AppTheme.textDim, fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ),
+        ),
+
+        // Middle: Small remote avatar
+        _buildRemoteAvatar(compact: true),
+
+        // Bottom: Transcripts / Captions
+        Expanded(
+          child: _buildTranscriptArea(speech, signService, true),
+        ),
+
+        // Bottom-most: Sign detection tools
+        _buildSignStatus(signService),
+      ],
+    );
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // HEARING / NORMAL LAYOUT
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Widget _buildHearingLayout(
+      SpeechService speech, SignLanguageService signService) {
+    return Column(
+      children: [
+        // Top: Large avatar of the deaf person
+        _buildRemoteAvatar(compact: false),
+
+        const SizedBox(height: 12),
+
+        // Bottom: Large transcript area (Live captions of what the deaf person signs)
+        Expanded(
+          child: _buildTranscriptArea(speech, signService, false),
+        ),
+      ],
     );
   }
 
@@ -434,99 +529,78 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
   }
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // REMOTE USER AREA (mini video / avatar)
+  // REMOTE AVATAR (No Video)
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  Widget _buildRemoteUserArea() {
-    final callService = context.watch<CallService>();
-    final hasRemoteVideo = callService.remoteStream != null;
-
-    // Bind remote stream to renderer when available
-    if (hasRemoteVideo &&
-        _remoteRenderer.srcObject != callService.remoteStream) {
-      _remoteRenderer.srcObject = callService.remoteStream;
-    }
+  Widget _buildRemoteAvatar({required bool compact}) {
+    final height = compact ? 80.0 : 160.0;
+    final avatarSize = compact ? 48.0 : 80.0;
+    final fontSize = compact ? 24.0 : 40.0;
 
     return Container(
-      margin: const EdgeInsets.fromLTRB(20, 12, 20, 0),
-      height: 180,
-      clipBehavior: Clip.antiAlias,
+      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+      height: height,
       decoration: BoxDecoration(
         color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(compact ? 16 : 24),
         border: Border.all(color: AppTheme.border),
       ),
-      child: hasRemoteVideo
-          ? Stack(
-              fit: StackFit.expand,
-              children: [
-                RTCVideoView(
-                  _remoteRenderer,
-                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-                  mirror: false,
-                ),
-                // Name overlay
-                Positioned(
-                  left: 12,
-                  bottom: 10,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      widget.remoteUser.displayName,
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                ),
-              ],
-            )
-          : Center(
-              child: Column(
+      child: Center(
+        child: compact
+            ? Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Container(
-                    width: 72,
-                    height: 72,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: LinearGradient(
-                        colors: [
-                          AppTheme.roleColor(widget.remoteUser.role),
-                          AppTheme.roleColor(widget.remoteUser.role)
-                              .withOpacity(0.5),
-                        ],
-                      ),
-                    ),
-                    child: Center(
-                      child: Text(
-                        AppTheme.roleEmoji(widget.remoteUser.role),
-                        style: const TextStyle(fontSize: 36),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
+                  _buildAvatarCircle(avatarSize, fontSize),
+                  const SizedBox(width: 16),
                   Text(
                     widget.remoteUser.displayName,
                     style: GoogleFonts.dmSans(
                         fontSize: 16, fontWeight: FontWeight.w600),
                   ),
+                ],
+              )
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildAvatarCircle(avatarSize, fontSize),
+                  const SizedBox(height: 12),
                   Text(
-                    'Connecting video...',
+                    widget.remoteUser.displayName,
+                    style: GoogleFonts.dmSans(
+                        fontSize: 18, fontWeight: FontWeight.w600),
+                  ),
+                  Text(
+                    'Live translation active',
                     style: TextStyle(
-                      fontSize: 12,
+                      fontSize: 13,
                       color: AppTheme.roleColor(widget.remoteUser.role),
                     ),
                   ),
                 ],
               ),
-            ),
+      ),
+    );
+  }
+
+  Widget _buildAvatarCircle(double size, double fontSize) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          colors: [
+            AppTheme.roleColor(widget.remoteUser.role),
+            AppTheme.roleColor(widget.remoteUser.role).withOpacity(0.5),
+          ],
+        ),
+      ),
+      child: Center(
+        child: Text(
+          AppTheme.roleEmoji(widget.remoteUser.role),
+          style: TextStyle(fontSize: fontSize),
+        ),
+      ),
     );
   }
 
@@ -676,37 +750,7 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
 
     return Column(
       children: [
-        // Camera preview (always visible for deaf users)
-        if (_cameraController != null && _cameraController!.value.isInitialized)
-          Container(
-            margin: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-            height: 140,
-            clipBehavior: Clip.antiAlias,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: AppTheme.primary.withOpacity(0.4)),
-            ),
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                CameraPreview(_cameraController!),
-                // ROI overlay
-                Center(
-                  child: Container(
-                    width: 90,
-                    height: 90,
-                    decoration: BoxDecoration(
-                      border: Border.all(
-                          color: Colors.white.withOpacity(0.6), width: 1.5),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-        // Status bar
+        // (Camera preview moved to top of Deaf Layout)        // Status bar
         Container(
           margin: const EdgeInsets.symmetric(horizontal: 20),
           padding: const EdgeInsets.all(12),
