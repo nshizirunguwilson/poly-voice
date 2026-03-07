@@ -25,6 +25,10 @@ PolyVoice is a mobile calling app that acts as a **live translation bridge**:
 
 **One app. Any user. Zero barriers.**
 
+## **Project Overview**
+
+PolyVoice is a real-time accessibility calling application designed to bridge communication gaps between Deaf, Blind, and hearing users. The app enables seamless conversations by translating between speech, text, and sign language in real time. When a hearing or blind user speaks, the system converts speech into text that appears as live captions for the Deaf user. In return, the Deaf user can communicate using sign language captured through the device camera, which the system translates into text and then into spoken audio for the other participant. Our application also includes an experimental sign-language avatar that attempts to visually represent signed responses. While the avatar is not yet fully refined and does not produce perfectly natural signing, it demonstrates the direction of the system and our commitment to improving accessibility. As this project is currently an **MVP (Minimum Viable Product)** built for demonstration, the avatar and sign recognition features will be significantly improved in future versions to enable smoother, more accurate sign language performance and translation.
+
 ---
 
 ## Demo Flow
