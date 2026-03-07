@@ -4,6 +4,10 @@ import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:flutter/services.dart' show rootBundle;
 
 import '../config/app_config.dart';
 import '../config/theme.dart';
@@ -31,6 +35,10 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
   CameraController? _cameraController;
   bool _cameraActive = false;
 
+  // Avatar (Three.js WebView)
+  WebViewController? _webViewController;
+  bool _isWebViewReady = false;
+
   Timer? _callTimer;
   int _callDuration = 0;
 
@@ -55,6 +63,8 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
     _setupTranslationBridge();
     // Timer starts when call connects — see _listenForConnection()
     _listenForConnection();
+
+    _initAvatar();
 
     // Init camera for deaf users (sign language detection)
     final auth = context.read<AuthService>();
@@ -127,6 +137,12 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
       }
       _addMessage(text, isMe: false, type: msgType);
 
+      // Trigger Avatar Animation
+      if (_isWebViewReady) {
+        _webViewController
+            ?.runJavaScript("window.AvatarAPI?.playWord('$text');");
+      }
+
       // Clear the partial transcript once the final message arrives
       if (mounted) {
         setState(() => _remotePartialSpeech = '');
@@ -163,6 +179,39 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
     }
 
     callService.addListener(listener);
+  }
+
+  Future<void> _initAvatar() async {
+    _webViewController = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(Colors.transparent)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageFinished: (String url) async {
+            try {
+              ByteData glbData =
+                  await rootBundle.load('assets/avatar/avatar.glb');
+              String base64Glb = base64Encode(glbData.buffer.asUint8List());
+              await _webViewController?.runJavaScript(
+                  "if (window.loadAvatarGLB) window.loadAvatarGLB('data:model/gltf-binary;base64,$base64Glb');");
+            } catch (e) {
+              debugPrint("Error pushing GLB: $e");
+            }
+          },
+        ),
+      )
+      ..addJavaScriptChannel(
+        'Print',
+        onMessageReceived: (JavaScriptMessage message) {
+          debugPrint("WebView: ${message.message}");
+          if (message.message == 'AvatarReady') {
+            if (mounted) {
+              setState(() => _isWebViewReady = true);
+            }
+          }
+        },
+      )
+      ..loadFlutterAsset('assets/avatar/index.html');
   }
 
   // ── Camera (deaf users only) ──────────────
@@ -216,14 +265,6 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
         _cameraActive = false;
       });
     }
-  }
-
-  /// Speak the currently detected sign text via TTS
-  void _speakDetectedText() {
-    final signService = context.read<SignLanguageService>();
-    final text = signService.detectedWordString.trim();
-    if (text.isEmpty) return;
-    context.read<SpeechService>().speak(text);
   }
 
   /// Send sign word as chat message, speak it, and relay to remote
@@ -355,9 +396,6 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
                 ],
               ),
             ),
-
-            // ── Bottom Controls ──
-            _buildControls(isDeaf),
           ],
         ),
       ),
@@ -432,17 +470,41 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
           ),
         ),
 
-        // Middle: Small remote avatar
-        _buildRemoteAvatar(compact: true),
+        // Middle: Large remote avatar (WebView)
+        Container(
+          width: 180,
+          height: 180,
+          margin: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: AppTheme.surface,
+            border: Border.all(color: AppTheme.border, width: 1),
+            boxShadow: [
+              BoxShadow(
+                color: AppTheme.primary.withOpacity(0.1),
+                blurRadius: 20,
+                spreadRadius: 2,
+              )
+            ],
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Stack(
+            children: [
+              if (_webViewController != null)
+                WebViewWidget(controller: _webViewController!),
+              if (!_isWebViewReady)
+                const Center(
+                  child: CircularProgressIndicator(color: AppTheme.primary),
+                ),
+            ],
+          ),
+        ),
 
         // Bottom: Transcripts / Captions
         Expanded(
           flex: 2,
           child: _buildTranscriptArea(speech, signService, true),
         ),
-
-        // Bottom-most: Sign detection tools
-        _buildSignStatus(signService),
       ],
     );
   }
@@ -455,8 +517,35 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
       SpeechService speech, SignLanguageService signService) {
     return Column(
       children: [
-        // Top: Large avatar of the deaf person
-        _buildRemoteAvatar(compact: false),
+        // Top: Large remote avatar (WebView)
+        Container(
+          width: 200,
+          height: 200,
+          margin: const EdgeInsets.symmetric(vertical: 20),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: AppTheme.surface,
+            border: Border.all(color: AppTheme.border, width: 1.5),
+            boxShadow: [
+              BoxShadow(
+                color: AppTheme.primary.withOpacity(0.15),
+                blurRadius: 30,
+                spreadRadius: 5,
+              )
+            ],
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Stack(
+            children: [
+              if (_webViewController != null)
+                WebViewWidget(controller: _webViewController!),
+              if (!_isWebViewReady)
+                const Center(
+                  child: CircularProgressIndicator(color: AppTheme.primary),
+                ),
+            ],
+          ),
+        ),
 
         const SizedBox(height: 12),
 
@@ -473,6 +562,7 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Widget _buildCallHeader() {
+    final myRole = context.read<AuthService>().currentUser?.role ?? 'normal';
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
       decoration: const BoxDecoration(
@@ -542,6 +632,29 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
               ],
             ),
           ),
+          IconButton(
+            onPressed: () {
+              setState(() => _audioEnabled = !_audioEnabled);
+              context.read<CallService>().toggleAudio(_audioEnabled);
+              if (_audioEnabled && myRole != 'deaf') {
+                context.read<SpeechService>().startListening();
+              } else {
+                context.read<SpeechService>().stopListening();
+              }
+            },
+            style: IconButton.styleFrom(
+              backgroundColor: _audioEnabled
+                  ? AppTheme.primary.withOpacity(0.12)
+                  : AppTheme.danger.withOpacity(0.12),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+            ),
+            icon: Icon(
+                _audioEnabled ? Icons.mic_rounded : Icons.mic_off_rounded,
+                color: _audioEnabled ? AppTheme.primary : AppTheme.danger,
+                size: 22),
+          ),
+          const SizedBox(width: 8),
           // End call button (compact)
           IconButton(
             onPressed: _endCall,
@@ -554,82 +667,6 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
                 color: AppTheme.danger, size: 22),
           ),
         ],
-      ),
-    );
-  }
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // REMOTE AVATAR (No Video)
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Widget _buildRemoteAvatar({required bool compact}) {
-    final height = compact ? 80.0 : 160.0;
-    final avatarSize = compact ? 48.0 : 80.0;
-    final fontSize = compact ? 24.0 : 40.0;
-
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-      height: height,
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(compact ? 16 : 24),
-        border: Border.all(color: AppTheme.border),
-      ),
-      child: Center(
-        child: compact
-            ? Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _buildAvatarCircle(avatarSize, fontSize),
-                  const SizedBox(width: 16),
-                  Text(
-                    widget.remoteUser.displayName,
-                    style: GoogleFonts.dmSans(
-                        fontSize: 16, fontWeight: FontWeight.w600),
-                  ),
-                ],
-              )
-            : Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _buildAvatarCircle(avatarSize, fontSize),
-                  const SizedBox(height: 12),
-                  Text(
-                    widget.remoteUser.displayName,
-                    style: GoogleFonts.dmSans(
-                        fontSize: 18, fontWeight: FontWeight.w600),
-                  ),
-                  Text(
-                    'Live translation active',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: AppTheme.roleColor(widget.remoteUser.role),
-                    ),
-                  ),
-                ],
-              ),
-      ),
-    );
-  }
-
-  Widget _buildAvatarCircle(double size, double fontSize) {
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: LinearGradient(
-          colors: [
-            AppTheme.roleColor(widget.remoteUser.role),
-            AppTheme.roleColor(widget.remoteUser.role).withOpacity(0.5),
-          ],
-        ),
-      ),
-      child: Center(
-        child: Text(
-          AppTheme.roleEmoji(widget.remoteUser.role),
-          style: TextStyle(fontSize: fontSize),
-        ),
       ),
     );
   }
@@ -769,270 +806,11 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
       ),
     );
   }
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // SIGN DETECTION STATUS BAR
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Widget _buildSignStatus(SignLanguageService signService) {
-    final result = signService.lastResult;
-    final word = signService.detectedWordString;
-    final hasBackend = signService.backendReachable;
-
-    return Column(
-      children: [
-        // (Camera preview moved to top of Deaf Layout)        // Status bar
-        Container(
-          margin: const EdgeInsets.symmetric(horizontal: 20),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: AppTheme.surface,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: hasBackend
-                  ? AppTheme.border
-                  : AppTheme.danger.withOpacity(0.4),
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Backend status + camera toggle
-              Row(
-                children: [
-                  Container(
-                    width: 6,
-                    height: 6,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: hasBackend ? AppTheme.accent : AppTheme.danger,
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    hasBackend ? 'AI Detection Active' : 'Backend Offline',
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: hasBackend ? AppTheme.accent : AppTheme.danger,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const Spacer(),
-                ],
-              ),
-              const SizedBox(height: 10),
-
-              // Letter + word row
-              Row(
-                children: [
-                  // Detected letter circle
-                  Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(12),
-                      gradient: result != null && result.isStable
-                          ? const LinearGradient(
-                              colors: [AppTheme.primary, AppTheme.primaryLight])
-                          : null,
-                      color: result == null || !result.isStable
-                          ? AppTheme.surfaceLight
-                          : null,
-                      border: Border.all(
-                        color: result != null && result.isStable
-                            ? Colors.transparent
-                            : AppTheme.border,
-                      ),
-                    ),
-                    child: Center(
-                      child: Text(
-                        result?.letter ?? '?',
-                        style: GoogleFonts.syne(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w800,
-                          color: result != null && result.isStable
-                              ? Colors.white
-                              : AppTheme.textDim,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-
-                  // Word being composed
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('Composing:',
-                            style: TextStyle(
-                                color: AppTheme.textDim, fontSize: 10)),
-                        const SizedBox(height: 2),
-                        Text(
-                          word.isEmpty ? '...' : word,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: GoogleFonts.syne(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.textPrimary,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  // Speak button
-                  IconButton(
-                    onPressed: word.isEmpty ? null : _speakDetectedText,
-                    style: IconButton.styleFrom(
-                      backgroundColor: word.isEmpty
-                          ? AppTheme.surfaceLight
-                          : AppTheme.primary.withOpacity(0.15),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.all(8),
-                    ),
-                    icon: Icon(
-                      Icons.volume_up_rounded,
-                      color: word.isEmpty ? AppTheme.textDim : AppTheme.primary,
-                      size: 20,
-                    ),
-                  ),
-
-                  const SizedBox(width: 4),
-
-                  // Send button
-                  IconButton(
-                    onPressed: word.isEmpty ? null : _sendAndSpeakSignWord,
-                    style: IconButton.styleFrom(
-                      backgroundColor: word.isEmpty
-                          ? AppTheme.surfaceLight
-                          : AppTheme.accent.withOpacity(0.15),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.all(8),
-                    ),
-                    icon: Icon(
-                      Icons.send_rounded,
-                      color: word.isEmpty ? AppTheme.textDim : AppTheme.accent,
-                      size: 20,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // BOTTOM CONTROLS
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Widget _buildControls(bool isDeaf) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-      decoration: const BoxDecoration(
-        border: Border(top: BorderSide(color: AppTheme.border, width: 0.5)),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          // Mic toggle
-          _ControlButton(
-            icon: _audioEnabled ? Icons.mic_rounded : Icons.mic_off_rounded,
-            label: 'Mic',
-            active: _audioEnabled,
-            onTap: () {
-              setState(() => _audioEnabled = !_audioEnabled);
-              context.read<CallService>().toggleAudio(_audioEnabled);
-              if (_audioEnabled && !isDeaf) {
-                context.read<SpeechService>().startListening();
-              } else {
-                context.read<SpeechService>().stopListening();
-              }
-            },
-          ),
-
-          // Flip camera
-          _ControlButton(
-            icon: Icons.flip_camera_ios_rounded,
-            label: 'Flip',
-            onTap: () => context.read<CallService>().switchCamera(),
-          ),
-
-          // End call
-          _ControlButton(
-            icon: Icons.call_end_rounded,
-            label: 'End',
-            color: AppTheme.danger,
-            active: true,
-            onTap: _endCall,
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // HELPER WIDGETS
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-class _ControlButton extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final bool active;
-  final Color? color;
-  final VoidCallback onTap;
-
-  const _ControlButton({
-    required this.icon,
-    required this.label,
-    this.active = false,
-    this.color,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final c = color ?? AppTheme.primary;
-
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 52,
-            height: 52,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: active ? c.withOpacity(0.15) : AppTheme.surfaceLight,
-              border: Border.all(
-                color: active ? c.withOpacity(0.4) : AppTheme.border,
-              ),
-            ),
-            child: Icon(icon,
-                color: active ? c : AppTheme.textSecondary, size: 24),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 10,
-              color: active ? c : AppTheme.textDim,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
 
 enum MessageType { speech, sign, quickPhrase }
 

@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Avatar Signer</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background-color: transparent; 
+      }
+      #canvas-container {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+      #loading {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        color: #8e8e93;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        font-size: 14px;
+        font-weight: 500;
+        text-align: center;
+      }
+    </style>
+    <!-- Use standard local asset resolution since we're using loadFlutterAsset -->
+    <script src="three.min.js"></script>
+    <script src="GLTFLoader.js"></script>
+  </head>
+  <body>
+    <div id="loading">Loading Engine...</div>
+    <div id="canvas-container"></div>
+
+    <script>
+      let avatarModel = null;
+      let mixer = null;
+      const bones = {};
+      
+      const container = document.getElementById("canvas-container");
+      const scene = new THREE.Scene();
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.outputEncoding = THREE.sRGBEncoding;
+      container.appendChild(renderer.domElement);
+
+      const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+      camera.position.set(0, 0.5, 4.5);
+
+      // Add a target for the camera to look at the avatar's upper body
+      camera.lookAt(0, 0.2, 0);
+
+      scene.add(new THREE.AmbientLight(0xffffff, 1.2)); 
+      const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+      dirLight.position.set(0, 5, 5);
+      scene.add(dirLight);
+
+      const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.5);
+      hemiLight.position.set(0, 10, 0);
+      scene.add(hemiLight);
+
+      // --- Animation Loop ---
+      const clock = new THREE.Clock();
+      function animate() {
+        requestAnimationFrame(animate);
+        if (mixer) mixer.update(clock.getDelta());
+        if (window.AvatarAPI && window.AvatarAPI.updateAnimations) {
+          window.AvatarAPI.updateAnimations();
+        }
+        renderer.render(scene, camera);
+      }
+      animate();
+
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      // --- Load Model Function ---
+      window.loadAvatarGLB = function(base64Url) {
+          document.getElementById("loading").innerText = "Parsing Avatar...";
+          const gltfLoader = new THREE.GLTFLoader();
+          
+          gltfLoader.load(base64Url, function(gltf) {
+            avatarModel = gltf.scene;
+            
+            // Scaled down slightly to fit the T-pose
+            avatarModel.scale.set(1.5, 1.5, 1.5);
+            avatarModel.position.set(0, -1, 0); 
+            scene.add(avatarModel);
+
+            avatarModel.traverse((child) => {
+              if (child.isMesh) {
+                child.material = new THREE.MeshLambertMaterial({
+                  color: 0xd0d0d0, 
+                  emissive: 0x101010,
+                  skinning: true
+                });
+                child.frustumCulled = false;
+              }
+              if (child.isBone) {
+                if (child.name.includes("RightArm")) bones.rShoulder = child;
+                if (child.name.includes("RightForeArm")) bones.rElbow = child;
+                if (child.name.includes("RightHand")) bones.rHand = child;
+                if (child.name.includes("LeftArm")) bones.lShoulder = child;
+                if (child.name.includes("LeftForeArm")) bones.lElbow = child;
+              }
+            });
+
+            // Center the model cleanly so scaling doesn't throw it out of bounds
+            const box = new THREE.Box3().setFromObject(avatarModel);
+            const center = box.getCenter(new THREE.Vector3());
+            avatarModel.position.x += (avatarModel.position.x - center.x);
+            avatarModel.position.y += (avatarModel.position.y - center.y);
+            avatarModel.position.y -= 0.5; // Offset slightly down so the chest is centered
+            avatarModel.position.z += (avatarModel.position.z - center.z);
+
+            document.getElementById("loading").style.display = "none";
+            if (window.Print && window.Print.postMessage) {
+              window.Print.postMessage('AvatarReady');
+            }
+          }, undefined, function(error) {
+            console.error(error);
+            document.getElementById("loading").innerText = "Failed to load model geometry";
+            if (window.Print && window.Print.postMessage) {
+              window.Print.postMessage('Error: ' + error.message);
+            }
+          });
+      };
+
+      // --- Flutter Communication API ---
+      window.AvatarAPI = {
+        activeAnimations: [],
+
+        animateProperty: function (object, propName, targetValue, durationMs) {
+          if (!object) return;
+          const startValue = object[propName];
+          const startTime = performance.now();
+          this.activeAnimations.push({ object, propName, startValue, targetValue, startTime, durationMs });
+        },
+
+        updateAnimations: function () {
+          const now = performance.now();
+          for (let i = this.activeAnimations.length - 1; i >= 0; i--) {
+            const anim = this.activeAnimations[i];
+            let progress = (now - anim.startTime) / anim.durationMs;
+
+            if (progress >= 1.0) {
+              anim.object[anim.propName] = anim.targetValue;
+              this.activeAnimations.splice(i, 1);
+            } else {
+              progress = progress < 0.5 ? 4 * progress * progress * progress : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+              anim.object[anim.propName] = anim.startValue + (anim.targetValue - anim.startValue) * progress;
+            }
+          }
+        },
+
+        playWord: function (word) {
+          if (!bones.rShoulder || !bones.rElbow) return; 
+
+          word = word.toUpperCase();
+
+          // Reset all involved bones to default
+          this.animateProperty(bones.rShoulder.rotation, "x", 0, 300);
+          this.animateProperty(bones.rShoulder.rotation, "y", 0, 300);
+          this.animateProperty(bones.rShoulder.rotation, "z", 0, 300);
+          this.animateProperty(bones.rElbow.rotation, "x", 0, 300);
+          this.animateProperty(bones.rElbow.rotation, "y", 0, 300);
+          this.animateProperty(bones.rElbow.rotation, "z", 0, 300);
+          if (bones.rHand) {
+              this.animateProperty(bones.rHand.rotation, "x", 0, 300);
+              this.animateProperty(bones.rHand.rotation, "y", 0, 300);
+              this.animateProperty(bones.rHand.rotation, "z", 0, 300);
+          }
+
+          if (bones.lShoulder) {
+            this.animateProperty(bones.lShoulder.rotation, "x", 0, 300);
+            this.animateProperty(bones.lShoulder.rotation, "y", 0, 300);
+            this.animateProperty(bones.lShoulder.rotation, "z", 0, 300);
+          }
+          if (bones.lElbow) {
+            this.animateProperty(bones.lElbow.rotation, "x", 0, 300);
+            this.animateProperty(bones.lElbow.rotation, "y", 0, 300);
+            this.animateProperty(bones.lElbow.rotation, "z", 0, 300);
+          }
+
+          setTimeout(() => {
+            if (word === "HELLO") {
+              // Salute from forehead outward
+              this.animateProperty(bones.rShoulder.rotation, "x", -1.0, 300); // Raise arm
+              this.animateProperty(bones.rShoulder.rotation, "z", -0.5, 300);
+              this.animateProperty(bones.rElbow.rotation, "x", -1.5, 300); // Bend to forehead
+              
+              setTimeout(() => {
+                this.animateProperty(bones.rShoulder.rotation, "z", -1.5, 300); // Move arm outward
+                this.animateProperty(bones.rElbow.rotation, "x", -0.2, 300); // Straighten elbow
+              }, 400);
+              
+              setTimeout(() => this.playWord("REST"), 1200);
+
+            } else if (word === "THANK YOU") {
+              // Hand flat on chin, then move outward and down
+              this.animateProperty(bones.rShoulder.rotation, "x", -1.0, 300);
+              this.animateProperty(bones.rElbow.rotation, "x", -1.5, 300); // Hand to chin
+              
+              setTimeout(() => {
+                this.animateProperty(bones.rShoulder.rotation, "x", -0.5, 400); // Arm moves out
+                this.animateProperty(bones.rElbow.rotation, "x", -0.2, 400); // Elbow slightly straight
+                if(bones.rHand) this.animateProperty(bones.rHand.rotation, "x", 0.3, 400); // Palm faces up slightly
+              }, 400);
+              
+              setTimeout(() => this.playWord("REST"), 1200);
+
+            } else if (word === "GOODBYE") {
+              // Arm up, side to side wave
+              this.animateProperty(bones.rShoulder.rotation, "z", -1.5, 300);
+              this.animateProperty(bones.rElbow.rotation, "x", -0.5, 300); // Arm up
+              
+              if(bones.rHand) {
+                  // Hand wave left/right
+                  setTimeout(() => this.animateProperty(bones.rHand.rotation, "z", 0.5, 150), 300);
+                  setTimeout(() => this.animateProperty(bones.rHand.rotation, "z", -0.3, 150), 450);
+                  setTimeout(() => this.animateProperty(bones.rHand.rotation, "z", 0.5, 150), 600);
+                  setTimeout(() => this.animateProperty(bones.rHand.rotation, "z", 0.0, 150), 750);
+              }
+              setTimeout(() => this.playWord("REST"), 1200);
+
+            } else if (word === "PLEASE") {
+              // BOTH hands rubbing chest in circles
+              this.animateProperty(bones.rShoulder.rotation, "x", -0.5, 300);
+              this.animateProperty(bones.rShoulder.rotation, "z", -0.5, 300);
+              this.animateProperty(bones.rElbow.rotation, "x", -1.2, 300); 
+
+              if (bones.lShoulder) {
+                this.animateProperty(bones.lShoulder.rotation, "x", -0.5, 300);
+                this.animateProperty(bones.lShoulder.rotation, "z", 0.5, 300);
+              }
+              if (bones.lElbow) {
+                this.animateProperty(bones.lElbow.rotation, "x", -1.2, 300); 
+              }
+              
+              // Circular motion right hand
+              setTimeout(() => this.animateProperty(bones.rShoulder.rotation, "y", 0.3, 200), 300);
+              setTimeout(() => this.animateProperty(bones.rShoulder.rotation, "x", -0.7, 200), 500);
+              setTimeout(() => this.animateProperty(bones.rShoulder.rotation, "y", 0.0, 200), 700);
+              setTimeout(() => this.animateProperty(bones.rShoulder.rotation, "x", -0.5, 200), 900);
+              
+              // Circular motion left hand
+              if (bones.lShoulder) {
+                setTimeout(() => this.animateProperty(bones.lShoulder.rotation, "y", -0.3, 200), 300);
+                setTimeout(() => this.animateProperty(bones.lShoulder.rotation, "x", -0.7, 200), 500);
+                setTimeout(() => this.animateProperty(bones.lShoulder.rotation, "y", 0.0, 200), 700);
+                setTimeout(() => this.animateProperty(bones.lShoulder.rotation, "x", -0.5, 200), 900);
+              }
+
+              setTimeout(() => this.playWord("REST"), 1400);
+
+            } else if (word === "YES") {
+              // Fist nod (using wrist/hand to nod)
+              this.animateProperty(bones.rShoulder.rotation, "x", -0.8, 300);
+              this.animateProperty(bones.rElbow.rotation, "x", -1.0, 300);
+
+              if(bones.rHand) {
+                  setTimeout(() => this.animateProperty(bones.rHand.rotation, "x", 0.6, 200), 300); // nod down
+                  setTimeout(() => this.animateProperty(bones.rHand.rotation, "x", -0.2, 200), 500); // back up
+                  setTimeout(() => this.animateProperty(bones.rHand.rotation, "x", 0.6, 200), 700); // nod down
+                  setTimeout(() => this.animateProperty(bones.rHand.rotation, "x", 0.0, 200), 900); // back up
+              }
+              setTimeout(() => this.playWord("REST"), 1300);
+
+            } else if (word !== "REST" && word !== "") {
+              // FALLBACK: Move both arms up and rotate all the hands
+              this.animateProperty(bones.rShoulder.rotation, "z", -0.8, 500); 
+              this.animateProperty(bones.rElbow.rotation, "x", -1.0, 500);
+              if (bones.lShoulder) this.animateProperty(bones.lShoulder.rotation, "z", 0.8, 500);
+              if (bones.lElbow) this.animateProperty(bones.lElbow.rotation, "x", -1.0, 500);
+
+              // Rotate hands
+              if(bones.rHand) {
+                  setTimeout(() => this.animateProperty(bones.rHand.rotation, "y", 1.5, 300), 500);
+                  setTimeout(() => this.animateProperty(bones.rHand.rotation, "y", -1.5, 300), 800);
+                  setTimeout(() => this.animateProperty(bones.rHand.rotation, "y", 0.0, 300), 1100);
+              }
+              if(bones.lHand) {
+                  setTimeout(() => this.animateProperty(bones.lHand.rotation, "y", -1.5, 300), 500);
+                  setTimeout(() => this.animateProperty(bones.lHand.rotation, "y", 1.5, 300), 800);
+                  setTimeout(() => this.animateProperty(bones.lHand.rotation, "y", 0.0, 300), 1100);
+              }
+
+              setTimeout(() => this.playWord("REST"), 2000);
+            }
+          }, 350); 
+        },
+      };
+    </script>
+  </body>
+</html>

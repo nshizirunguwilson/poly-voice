@@ -1,6 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
+
 import 'package:google_fonts/google_fonts.dart';
+
+import 'package:webview_flutter/webview_flutter.dart';
 import '../config/theme.dart';
 
 class AvatarScreen extends StatefulWidget {
@@ -20,6 +26,9 @@ class _AvatarScreenState extends State<AvatarScreen>
   double _speed = 1.0;
   Timer? _animationTimer;
 
+  late final WebViewController _webViewController;
+  bool _isWebViewReady = false;
+
   late AnimationController _pulseController;
 
   final List<String> _recentTranslations = [
@@ -37,6 +46,40 @@ class _AvatarScreenState extends State<AvatarScreen>
       vsync: this,
       duration: const Duration(milliseconds: 1500),
     );
+
+    _webViewController = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(Colors.transparent)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageFinished: (String url) async {
+            // Read the GLB 3D model data into base64
+            try {
+              ByteData glbData =
+                  await rootBundle.load('assets/avatar/avatar.glb');
+              String base64Glb = base64Encode(glbData.buffer.asUint8List());
+
+              // Pass the GLB data to Javascript which handles the rendering
+              await _webViewController.runJavaScript(
+                  "if (window.loadAvatarGLB) window.loadAvatarGLB('data:model/gltf-binary;base64,$base64Glb');");
+            } catch (e) {
+              debugPrint("Error pushing GLB: $e");
+            }
+          },
+        ),
+      )
+      ..addJavaScriptChannel(
+        'Print',
+        onMessageReceived: (JavaScriptMessage message) {
+          debugPrint("WebView: ${message.message}");
+          if (message.message == 'AvatarReady') {
+            if (mounted) {
+              setState(() => _isWebViewReady = true);
+            }
+          }
+        },
+      )
+      ..loadFlutterAsset('assets/avatar/index.html');
   }
 
   @override
@@ -90,12 +133,21 @@ class _AvatarScreenState extends State<AvatarScreen>
     _startAnimation();
   }
 
+  void _triggerAvatarAnimation(String word) {
+    if (_isWebViewReady) {
+      _webViewController.runJavaScript("window.AvatarAPI?.playWord('$word');");
+    }
+  }
+
   void _startAnimation() {
     if (_currentWord.isEmpty) return;
 
     _animationTimer?.cancel();
     setState(() => _isPlaying = true);
     _pulseController.repeat(reverse: true);
+
+    // Tell the 3D avatar to play the full word
+    _triggerAvatarAnimation(_currentWord);
 
     _animationTimer = Timer.periodic(
       Duration(milliseconds: (800 / _speed).round()),
@@ -113,6 +165,7 @@ class _AvatarScreenState extends State<AvatarScreen>
     _animationTimer?.cancel();
     _pulseController.stop();
     setState(() => _isPlaying = false);
+    _triggerAvatarAnimation('REST');
   }
 
   void _togglePlayPause() {
@@ -147,9 +200,8 @@ class _AvatarScreenState extends State<AvatarScreen>
 
   @override
   Widget build(BuildContext context) {
-    final currentLetter = _currentWord.isNotEmpty
-        ? _currentWord[_currentLetterIndex]
-        : '?';
+    final currentLetter =
+        _currentWord.isNotEmpty ? _currentWord[_currentLetterIndex] : '?';
 
     return Scaffold(
       body: SafeArea(
@@ -165,11 +217,15 @@ class _AvatarScreenState extends State<AvatarScreen>
                     onPressed: () => Navigator.pop(context),
                   ),
                   const SizedBox(width: 4),
-                  Text(
-                    'Sign Language Avatar',
-                    style: GoogleFonts.syne(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w800,
+                  Expanded(
+                    child: Text(
+                      'Sign Language Avatar',
+                      style: GoogleFonts.syne(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                 ],
@@ -191,88 +247,106 @@ class _AvatarScreenState extends State<AvatarScreen>
                 ),
                 child: Column(
                   children: [
-                    // Avatar circle
-                    AnimatedBuilder(
-                      animation: _pulseController,
-                      builder: (_, child) {
-                        final scale = 1.0 + (_pulseController.value * 0.05);
-                        return Transform.scale(
-                          scale: _isPlaying ? scale : 1.0,
-                          child: child,
-                        );
-                      },
-                      child: Container(
-                        width: 140,
-                        height: 140,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: const LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [AppTheme.primary, AppTheme.primaryLight],
-                          ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: AppTheme.primary.withOpacity(0.3),
-                              blurRadius: 40,
-                              spreadRadius: 5,
-                            ),
-                          ],
-                        ),
-                        child: Center(
-                          child: AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 200),
-                            transitionBuilder: (child, animation) =>
-                                ScaleTransition(scale: animation, child: child),
-                            child: Text(
-                              currentLetter,
-                              key: ValueKey(currentLetter + _currentLetterIndex.toString()),
-                              style: GoogleFonts.syne(
-                                fontSize: 72,
-                                fontWeight: FontWeight.w800,
-                                color: Colors.white,
+                    // Avatar viewport (WebView playing Three.js scene)
+                    Container(
+                      width: 220,
+                      height: 220,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: AppTheme.surfaceLight,
+                        border: Border.all(
+                            color:
+                                _isPlaying ? AppTheme.primary : AppTheme.border,
+                            width: _isPlaying ? 2 : 1),
+                        boxShadow: _isPlaying
+                            ? [
+                                BoxShadow(
+                                  color: AppTheme.primary.withOpacity(0.3),
+                                  blurRadius: 40,
+                                  spreadRadius: 5,
+                                )
+                              ]
+                            : [],
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: Stack(
+                        children: [
+                          WebViewWidget(controller: _webViewController),
+                          if (!_isWebViewReady)
+                            const Center(
+                              child: CircularProgressIndicator(
+                                color: AppTheme.primary,
                               ),
                             ),
-                          ),
-                        ),
+                          // Overlay current letter on top center if playing word
+                          if (_isWebViewReady && currentLetter != '?')
+                            Positioned(
+                              top: 10,
+                              right: 20,
+                              child: AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 200),
+                                transitionBuilder: (child, animation) =>
+                                    ScaleTransition(
+                                        scale: animation, child: child),
+                                child: Text(
+                                  currentLetter,
+                                  key: ValueKey(currentLetter +
+                                      _currentLetterIndex.toString()),
+                                  style: GoogleFonts.syne(
+                                    fontSize: 32,
+                                    fontWeight: FontWeight.w800,
+                                    color: AppTheme.primary,
+                                    shadows: [
+                                      Shadow(
+                                        color:
+                                            AppTheme.surface.withOpacity(0.8),
+                                        blurRadius: 4,
+                                      )
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            )
+                        ],
                       ),
                     ),
 
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 30),
 
                     // Word progress
                     if (_currentWord.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 20),
-                        child: RichText(
-                          textAlign: TextAlign.center,
-                          text: TextSpan(
-                            children: _currentWord
-                                .split('')
-                                .asMap()
-                                .entries
-                                .map((entry) {
-                              final isActive =
-                                  entry.key == _currentLetterIndex;
-                              final isPast = entry.key < _currentLetterIndex;
-                              return TextSpan(
-                                text: entry.value == ' '
-                                    ? '  '
-                                    : entry.value,
-                                style: GoogleFonts.syne(
-                                  fontSize: 22,
-                                  fontWeight: isActive
-                                      ? FontWeight.w800
-                                      : FontWeight.w400,
-                                  color: isActive
-                                      ? AppTheme.primary
-                                      : isPast
-                                          ? AppTheme.textPrimary
-                                          : AppTheme.textDim,
-                                  letterSpacing: 3,
-                                ),
-                              );
-                            }).toList(),
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: RichText(
+                            textAlign: TextAlign.center,
+                            text: TextSpan(
+                              children: _currentWord
+                                  .split('')
+                                  .asMap()
+                                  .entries
+                                  .map((entry) {
+                                final isActive =
+                                    entry.key == _currentLetterIndex;
+                                final isPast = entry.key < _currentLetterIndex;
+                                return TextSpan(
+                                  text: entry.value == ' ' ? '  ' : entry.value,
+                                  style: GoogleFonts.syne(
+                                    fontSize: 22,
+                                    fontWeight: isActive
+                                        ? FontWeight.w800
+                                        : FontWeight.w400,
+                                    color: isActive
+                                        ? AppTheme.primary
+                                        : isPast
+                                            ? AppTheme.textPrimary
+                                            : AppTheme.textDim,
+                                    letterSpacing: 3,
+                                  ),
+                                );
+                              }).toList(),
+                            ),
                           ),
                         ),
                       )
@@ -318,8 +392,8 @@ class _AvatarScreenState extends State<AvatarScreen>
 
                   // Speed selector
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
                       color: AppTheme.surfaceLight,
                       borderRadius: BorderRadius.circular(10),
@@ -336,14 +410,10 @@ class _AvatarScreenState extends State<AvatarScreen>
                           fontWeight: FontWeight.w600,
                         ),
                         items: const [
-                          DropdownMenuItem(
-                              value: 0.5, child: Text('0.5x')),
-                          DropdownMenuItem(
-                              value: 1.0, child: Text('1x')),
-                          DropdownMenuItem(
-                              value: 1.5, child: Text('1.5x')),
-                          DropdownMenuItem(
-                              value: 2.0, child: Text('2x')),
+                          DropdownMenuItem(value: 0.5, child: Text('0.5x')),
+                          DropdownMenuItem(value: 1.0, child: Text('1x')),
+                          DropdownMenuItem(value: 1.5, child: Text('1.5x')),
+                          DropdownMenuItem(value: 2.0, child: Text('2x')),
                         ],
                         onChanged: (v) {
                           if (v == null) return;
@@ -372,8 +442,8 @@ class _AvatarScreenState extends State<AvatarScreen>
                       controller: _textController,
                       decoration: const InputDecoration(
                         hintText: 'Type text to translate...',
-                        contentPadding: EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 14),
+                        contentPadding:
+                            EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                       ),
                       textInputAction: TextInputAction.send,
                       onSubmitted: (_) => _translateText(),
@@ -443,8 +513,7 @@ class _AvatarScreenState extends State<AvatarScreen>
                                   child: Text(
                                     'No recent translations',
                                     style: TextStyle(
-                                        color: AppTheme.textDim,
-                                        fontSize: 14),
+                                        color: AppTheme.textDim, fontSize: 14),
                                   ),
                                 )
                               : ListView.builder(
@@ -500,8 +569,7 @@ class _AvatarScreenState extends State<AvatarScreen>
 
                           // Alphabet tab
                           GridView.builder(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 20),
+                            padding: const EdgeInsets.symmetric(horizontal: 20),
                             gridDelegate:
                                 const SliverGridDelegateWithFixedCrossAxisCount(
                               crossAxisCount: 5,
@@ -510,24 +578,18 @@ class _AvatarScreenState extends State<AvatarScreen>
                             ),
                             itemCount: 26,
                             itemBuilder: (_, i) {
-                              final letter =
-                                  String.fromCharCode(65 + i);
-                              final isActive =
-                                  _currentWord.isNotEmpty &&
-                                      _currentWord[_currentLetterIndex] ==
-                                          letter;
+                              final letter = String.fromCharCode(65 + i);
+                              final isActive = _currentWord.isNotEmpty &&
+                                  _currentWord[_currentLetterIndex] == letter;
                               return GestureDetector(
                                 onTap: () => _showLetter(letter),
                                 child: AnimatedContainer(
-                                  duration:
-                                      const Duration(milliseconds: 200),
+                                  duration: const Duration(milliseconds: 200),
                                   decoration: BoxDecoration(
                                     color: isActive
-                                        ? AppTheme.primary
-                                            .withOpacity(0.2)
+                                        ? AppTheme.primary.withOpacity(0.2)
                                         : AppTheme.surfaceLight,
-                                    borderRadius:
-                                        BorderRadius.circular(12),
+                                    borderRadius: BorderRadius.circular(12),
                                     border: Border.all(
                                       color: isActive
                                           ? AppTheme.primary
@@ -589,9 +651,7 @@ class _ControlButton extends StatelessWidget {
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           color: isPrimary ? AppTheme.primary : AppTheme.surfaceLight,
-          border: isPrimary
-              ? null
-              : Border.all(color: AppTheme.border),
+          border: isPrimary ? null : Border.all(color: AppTheme.border),
           boxShadow: isPrimary
               ? [
                   BoxShadow(
