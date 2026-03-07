@@ -1,6 +1,6 @@
 // This is a generated file; do not edit or check into version control.
-FLUTTER_ROOT=/Users/mac/flutter
-FLUTTER_APPLICATION_PATH=/Users/mac/Downloads/poly-voice-main/flutter_app
+FLUTTER_ROOT=/Users/wilson/develop/flutter
+FLUTTER_APPLICATION_PATH=/Users/wilson/Work/polyvoice/flutter_app
 COCOAPODS_PARALLEL_CODE_SIGN=true
 FLUTTER_BUILD_DIR=build
 FLUTTER_BUILD_NAME=1.0.0

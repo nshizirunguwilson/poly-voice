@@ -12,9 +12,9 @@ PODS:
   - Flutter (1.0.0)
   - flutter_tts (0.0.1):
     - Flutter
-  - flutter_webrtc (0.12.6):
+  - flutter_webrtc (1.2.0):
     - Flutter
-    - WebRTC-SDK (= 125.6422.06)
+    - WebRTC-SDK (= 137.7151.12)
   - google_mlkit_commons (0.7.1):
     - Flutter
     - MLKitVision
@@ -100,7 +100,7 @@ PODS:
     - FlutterMacOS
   - vibration (1.7.5):
     - Flutter
-  - WebRTC-SDK (125.6422.06)
+  - WebRTC-SDK (137.7151.12)
   - webview_flutter_wkwebview (0.0.1):
     - Flutter
     - FlutterMacOS
@@ -180,7 +180,7 @@ SPEC CHECKSUMS:
   device_info_plus: 21fcca2080fbcd348be798aa36c3e5ed849eefbe
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   flutter_tts: 35ac3c7d42412733e795ea96ad2d7e05d0a75113
-  flutter_webrtc: 57f32415b8744e806f9c2a96ccdb60c6a627ba33
+  flutter_webrtc: 7de9a15705f7deede4413924a2f1409d39796ab5
   google_mlkit_commons: 9f155ff61a70e0fad8692a7edb5aa2dc468536d3
   google_mlkit_pose_detection: 41c4b04496620afbf251073e921d7b229ce06c9f
   GoogleDataTransport: 6c09b596d841063d76d4288cc2d2f42cc36e1e2a
@@ -203,7 +203,7 @@ SPEC CHECKSUMS:
   shared_preferences_foundation: 7036424c3d8ec98dfe75ff1667cb0cd531ec82bb
   speech_to_text: 3b313d98516d3d0406cea424782ec25470c59d19
   vibration: 8e2f50fc35bb736f9eecb7dd9f7047fbb6a6e888
-  WebRTC-SDK: 79942c006ea64f6fb48d7da8a4786dfc820bc1db
+  WebRTC-SDK: 1762e2de812354d27a8407d1b2c532064ec39fce
   webview_flutter_wkwebview: 8ebf4fded22593026f7dbff1fbff31ea98573c8d
 
 PODFILE CHECKSUM: 35c6ad3fa276965051d4ae56a5a141f311312681

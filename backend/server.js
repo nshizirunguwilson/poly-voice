@@ -16,8 +16,17 @@ const { v4: uuidv4 } = require("uuid");
 const Database = require("better-sqlite3");
 const twilio = require("twilio");
 
+const http = require("http");
+const { Server } = require("socket.io");
+
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Create HTTP server and attach Socket.IO
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: "*", methods: ["GET", "POST"] },
+});
 
 // ─── Middleware ───────────────────────────────────────
 app.use(helmet());
@@ -366,12 +375,93 @@ app.get("/api/calls/pending", authenticateToken, (req, res) => {
   res.json({ calls });
 });
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SOCKET.IO SIGNALING SERVER
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Track which rooms have which sockets
+const rooms = new Map(); // roomName -> Set<socketId>
+
+io.on("connection", (socket) => {
+  console.log(`[Socket.IO] Client connected: ${socket.id}`);
+  let currentRoom = null;
+
+  socket.on("join-room", (data) => {
+    const { roomName, username, role } = data;
+    currentRoom = roomName;
+
+    socket.join(roomName);
+    if (!rooms.has(roomName)) rooms.set(roomName, new Set());
+    rooms.get(roomName).add(socket.id);
+
+    console.log(`[Socket.IO] ${username} (${role}) joined room ${roomName} — ${rooms.get(roomName).size} peer(s)`);
+
+    // Notify other peers in the room that a new user joined
+    socket.to(roomName).emit("user-joined", { username, role, socketId: socket.id });
+  });
+
+  socket.on("offer", (data) => {
+    const { roomName } = data;
+    socket.to(roomName).emit("offer", data);
+  });
+
+  socket.on("answer", (data) => {
+    const { roomName } = data;
+    socket.to(roomName).emit("answer", data);
+  });
+
+  socket.on("ice-candidate", (data) => {
+    const { roomName } = data;
+    socket.to(roomName).emit("ice-candidate", data);
+  });
+
+  socket.on("call-connected", (data) => {
+    const { roomName } = data;
+    socket.to(roomName).emit("call-connected", data);
+  });
+
+  socket.on("text-message", (data) => {
+    const { roomName } = data;
+    socket.to(roomName).emit("text-message", data);
+  });
+
+  socket.on("partial-speech", (data) => {
+    const { roomName } = data;
+    socket.to(roomName).emit("partial-speech", data);
+  });
+
+  socket.on("leave-room", () => {
+    if (currentRoom) {
+      socket.to(currentRoom).emit("user-left", { socketId: socket.id });
+      socket.leave(currentRoom);
+      if (rooms.has(currentRoom)) {
+        rooms.get(currentRoom).delete(socket.id);
+        if (rooms.get(currentRoom).size === 0) rooms.delete(currentRoom);
+      }
+      console.log(`[Socket.IO] ${socket.id} left room ${currentRoom}`);
+      currentRoom = null;
+    }
+  });
+
+  socket.on("disconnect", () => {
+    if (currentRoom) {
+      socket.to(currentRoom).emit("user-left", { socketId: socket.id });
+      if (rooms.has(currentRoom)) {
+        rooms.get(currentRoom).delete(socket.id);
+        if (rooms.get(currentRoom).size === 0) rooms.delete(currentRoom);
+      }
+    }
+    console.log(`[Socket.IO] Client disconnected: ${socket.id}`);
+  });
+});
+
 // ─── Start Server ────────────────────────────────────
-app.listen(PORT, "0.0.0.0", () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`
   ╔══════════════════════════════════════════╗
-  ║   🤟 PolyVoice API Server               ║
+  ║   PolyVoice API Server                  ║
   ║   Running on http://0.0.0.0:${PORT}        ║
+  ║   Socket.IO signaling: enabled          ║
   ║   Environment: ${process.env.NODE_ENV || "development"}          ║
   ╚══════════════════════════════════════════╝
   `);
